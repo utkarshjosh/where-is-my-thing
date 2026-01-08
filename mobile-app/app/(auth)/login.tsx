@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
     View,
     Text,
@@ -8,6 +8,7 @@ import {
     Platform,
     ScrollView,
     Dimensions,
+    Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -17,34 +18,95 @@ import Animated, {
     FadeInDown,
     FadeInUp,
 } from 'react-native-reanimated';
+import * as WebBrowser from 'expo-web-browser';
+import * as Linking from 'expo-linking';
+import { useSignIn, useSSO } from '@clerk/clerk-expo';
 
 import theme from '@/constants/theme';
 import { GlassContainer } from '@/components/ui/GlassContainer';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { VoiceOrb } from '@/components/home/VoiceOrb';
+import { useWarmUpBrowser } from '@/hooks/useWarmUpBrowser';
 
 const { height } = Dimensions.get('window');
 
+// Warm up the browser for OAuth on Android
+WebBrowser.maybeCompleteAuthSession();
+
 export default function LoginScreen() {
+    useWarmUpBrowser();
+
+    const { signIn, setActive, isLoaded } = useSignIn();
+    const { startSSOFlow } = useSSO();
+
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [isGoogleLoading, setIsGoogleLoading] = useState(false);
     const [showPassword, setShowPassword] = useState(false);
 
+    // Handle email/password sign-in
     const handleLogin = async () => {
+        if (!isLoaded) return;
+
+        if (!email.trim() || !password.trim()) {
+            Alert.alert('Error', 'Please enter both email and password');
+            return;
+        }
+
         setIsLoading(true);
-        // Simulate login
-        setTimeout(() => {
+        try {
+            const signInAttempt = await signIn.create({
+                identifier: email.trim(),
+                password,
+            });
+
+            if (signInAttempt.status === 'complete') {
+                await setActive({ session: signInAttempt.createdSessionId });
+                router.replace('/(tabs)');
+            } else {
+                // Handle additional steps if needed (e.g., MFA)
+                console.log('Sign-in requires additional steps:', signInAttempt.status);
+                Alert.alert('Additional Steps Required', 'Please check your email or complete additional verification.');
+            }
+        } catch (err: any) {
+            console.error('Sign-in error:', JSON.stringify(err, null, 2));
+            const errorMessage = err.errors?.[0]?.message || err.message || 'Sign-in failed. Please try again.';
+            Alert.alert('Sign-in Failed', errorMessage);
+        } finally {
             setIsLoading(false);
-            router.replace('/(tabs)');
-        }, 1500);
+        }
     };
 
-    const handleSocialLogin = (provider: string) => {
-        console.log('Login with:', provider);
-        router.replace('/(tabs)');
-    };
+    // Handle Google OAuth sign-in
+    const handleGoogleLogin = useCallback(async () => {
+        if (!isLoaded) return;
+
+        setIsGoogleLoading(true);
+        try {
+            const { createdSessionId, setActive: setActiveSession } = await startSSOFlow({
+                strategy: 'oauth_google',
+                redirectUrl: Linking.createURL('/(tabs)', { scheme: 'mobileapp' }),
+            });
+
+            if (createdSessionId) {
+                await setActiveSession!({ session: createdSessionId });
+                router.replace('/(tabs)');
+            }
+        } catch (err: any) {
+            // User canceled or error occurred
+            if (err.code === 'ERR_REQUEST_CANCELED') {
+                console.log('Google sign-in canceled');
+                return;
+            }
+            console.error('Google sign-in error:', JSON.stringify(err, null, 2));
+            const errorMessage = err.errors?.[0]?.message || err.message || 'Google sign-in failed. Please try again.';
+            Alert.alert('Google Sign-in Failed', errorMessage);
+        } finally {
+            setIsGoogleLoading(false);
+        }
+    }, [isLoaded, startSSOFlow]);
 
     return (
         <SafeAreaView style={styles.container}>
@@ -90,6 +152,7 @@ export default function LoginScreen() {
                                 onChangeText={setEmail}
                                 keyboardType="email-address"
                                 autoCapitalize="none"
+                                autoComplete="email"
                                 leftIcon={
                                     <Ionicons
                                         name="mail-outline"
@@ -105,6 +168,7 @@ export default function LoginScreen() {
                                 value={password}
                                 onChangeText={setPassword}
                                 secureTextEntry={!showPassword}
+                                autoComplete="password"
                                 leftIcon={
                                     <Ionicons
                                         name="lock-closed-outline"
@@ -131,6 +195,7 @@ export default function LoginScreen() {
                                 title="Sign In"
                                 onPress={handleLogin}
                                 loading={isLoading}
+                                disabled={!isLoaded || isLoading || isGoogleLoading}
                                 size="lg"
                                 style={styles.signInButton}
                             />
@@ -146,24 +211,23 @@ export default function LoginScreen() {
                         {/* Social Login */}
                         <View style={styles.socialButtons}>
                             <TouchableOpacity
-                                style={styles.socialButton}
-                                onPress={() => handleSocialLogin('google')}
+                                style={[styles.socialButton, isGoogleLoading && styles.socialButtonLoading]}
+                                onPress={handleGoogleLogin}
+                                disabled={!isLoaded || isLoading || isGoogleLoading}
                             >
-                                <Ionicons name="logo-google" size={24} color={theme.colors.text.primary} />
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                                style={styles.socialButton}
-                                onPress={() => handleSocialLogin('apple')}
-                            >
-                                <Ionicons name="logo-apple" size={24} color={theme.colors.text.primary} />
+                                {isGoogleLoading ? (
+                                    <Ionicons name="sync" size={24} color={theme.colors.text.muted} />
+                                ) : (
+                                    <Ionicons name="logo-google" size={24} color={theme.colors.text.primary} />
+                                )}
                             </TouchableOpacity>
                         </View>
 
                         {/* Sign Up Link */}
                         <View style={styles.signUpContainer}>
                             <Text style={styles.signUpText}>Don't have an account? </Text>
-                            <TouchableOpacity onPress={() => router.push('/(auth)/tour')}>
-                                <Text style={styles.signUpLink}>Get Started</Text>
+                            <TouchableOpacity onPress={() => router.push('/(auth)/signup')}>
+                                <Text style={styles.signUpLink}>Sign Up</Text>
                             </TouchableOpacity>
                         </View>
                     </Animated.View>
@@ -190,31 +254,6 @@ const styles = StyleSheet.create({
     logoContainer: {
         alignItems: 'center',
         marginBottom: theme.spacing['2xl'],
-    },
-    miniOrb: {
-        width: 80,
-        height: 80,
-        borderRadius: 40,
-        overflow: 'hidden',
-        marginBottom: theme.spacing.md,
-        shadowColor: theme.colors.primary.base,
-        shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 0.5,
-        shadowRadius: 20,
-        elevation: 10,
-    },
-    orbGradient: {
-        ...StyleSheet.absoluteFillObject,
-    },
-    orbHighlight: {
-        position: 'absolute',
-        top: 10,
-        left: 15,
-        width: 25,
-        height: 10,
-        borderRadius: 5,
-        backgroundColor: 'rgba(255, 255, 255, 0.3)',
-        transform: [{ rotate: '-20deg' }],
     },
     appName: {
         color: theme.colors.text.primary,
@@ -279,6 +318,9 @@ const styles = StyleSheet.create({
         borderColor: theme.colors.glass.border,
         alignItems: 'center',
         justifyContent: 'center',
+    },
+    socialButtonLoading: {
+        opacity: 0.6,
     },
     signUpContainer: {
         flexDirection: 'row',

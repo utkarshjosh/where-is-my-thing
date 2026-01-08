@@ -1,10 +1,11 @@
 import React from 'react';
-import { Tabs } from 'expo-router';
+import { Tabs, Redirect } from 'expo-router';
 import { View, StyleSheet, Platform, useWindowDimensions } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useAuth } from '@clerk/clerk-expo';
 
 import theme from '@/constants/theme';
 
@@ -27,8 +28,19 @@ function TabBarIcon({ name, color, focused, size }: TabBarIconProps) {
 }
 
 export default function TabLayout() {
+  const { isSignedIn, isLoaded } = useAuth();
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+
+  // While Clerk is loading, don't render anything
+  if (!isLoaded) {
+    return null;
+  }
+
+  // Redirect unauthenticated users to login
+  if (!isSignedIn) {
+    return <Redirect href="/(auth)/login" />;
+  }
 
   // Determine if we're on a small screen (mobile)
   const isSmallScreen = width < 400 || height < 700;
@@ -103,6 +115,15 @@ export default function TabLayout() {
           title: 'Graph',
           tabBarIcon: ({ color, focused }) => (
             <TabBarIcon name="git-network" color={color} focused={focused} size={iconSize} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: 'Profile',
+          tabBarIcon: ({ color, focused }) => (
+            <TabBarIcon name="person" color={color} focused={focused} size={iconSize} />
           ),
         }}
       />

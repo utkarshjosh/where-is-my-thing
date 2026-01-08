@@ -4,24 +4,16 @@
  */
 
 import React, { useState, createContext, useContext, useEffect, Suspense } from 'react';
-import { View, StyleSheet, Platform, useWindowDimensions, Text } from 'react-native';
+import { View, StyleSheet, Platform, useWindowDimensions, Text, TouchableOpacity } from 'react-native';
 
 import { GlassOrb } from './GlassOrb';
 import { RingOrb } from './RingOrb';
+import { CSSRingOrb } from './CSSRingOrb';
+import { AIOrb } from './AIOrb';
 import theme from '@/constants/theme';
 
-// Try to import AIOrb but fallback gracefully on native
-let AIOrb: React.ComponentType<any> | null = null;
-if (Platform.OS === 'web') {
-    try {
-        AIOrb = require('./AIOrb').AIOrb;
-    } catch (e) {
-        console.log('AIOrb not available, using fallback');
-    }
-}
-
 export type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking';
-export type OrbType = 'glass' | 'ring' | 'blob' | 'auto';
+export type OrbType = 'glass' | 'ring' | 'css-ring' | 'blob' | 'auto';
 
 interface VoiceOrbProps {
     state?: OrbState;
@@ -36,17 +28,14 @@ interface OrbPreferenceContextType {
 }
 
 const OrbPreferenceContext = createContext<OrbPreferenceContextType>({
-    orbType: 'ring',
+    orbType: 'blob', // Default to the most premium one
     setOrbType: () => { },
 });
 
 export const useOrbPreference = () => useContext(OrbPreferenceContext);
 
 export function OrbPreferenceProvider({ children }: { children: React.ReactNode }) {
-    const [orbType, setOrbType] = useState<OrbType>('ring');
-
-    // Could load from AsyncStorage here
-    // useEffect(() => { loadFromStorage() }, []);
+    const [orbType, setOrbType] = useState<OrbType>('blob');
 
     return (
         <OrbPreferenceContext.Provider value={{ orbType, setOrbType }}>
@@ -65,7 +54,16 @@ function FallbackOrb({ size }: { size: number }) {
 }
 
 // Main VoiceOrb component
-export function VoiceOrb({ state = 'idle', size, type }: VoiceOrbProps) {
+export function VoiceOrb({ 
+    state = 'idle', 
+    size, 
+    type, 
+    onPressIn, 
+    onPressOut 
+}: VoiceOrbProps & { 
+    onPressIn?: () => void;
+    onPressOut?: () => void;
+}) {
     const { width: screenWidth } = useWindowDimensions();
     const orbSize = size || screenWidth * 0.55;
     const { orbType: preferredType } = useOrbPreference();
@@ -73,32 +71,44 @@ export function VoiceOrb({ state = 'idle', size, type }: VoiceOrbProps) {
     // Determine which orb to use
     const effectiveType = type || preferredType;
 
-    // Auto mode: use Ring on native, Blob on web
+    // Auto mode: use Blob (AIOrb) as it's the most advanced
     const resolvedType: Exclude<OrbType, 'auto'> =
-        effectiveType === 'auto'
-            ? (Platform.OS === 'web' && AIOrb ? 'blob' : 'ring')
-            : effectiveType;
+        effectiveType === 'auto' ? 'blob' : effectiveType;
 
-    // Render based on type
-    switch (resolvedType) {
-        case 'blob':
-            if (AIOrb && Platform.OS === 'web') {
+    const renderOrb = () => {
+        switch (resolvedType) {
+            case 'blob':
                 return (
                     <Suspense fallback={<FallbackOrb size={orbSize} />}>
                         <AIOrb state={state} size={orbSize} />
                     </Suspense>
                 );
-            }
-            // Fallback to ring if blob not available
-            return <RingOrb state={state} size={orbSize} />;
 
-        case 'ring':
-            return <RingOrb state={state} size={orbSize} />;
+            case 'ring':
+                return <RingOrb state={state} size={orbSize} />;
 
-        case 'glass':
-        default:
-            return <GlassOrb state={state} />;
+            case 'css-ring':
+                return <CSSRingOrb state={state} size={orbSize} />;
+
+            case 'glass':
+            default:
+                return <GlassOrb state={state} />;
+        }
+    };
+
+    if (onPressIn || onPressOut) {
+        return (
+            <TouchableOpacity 
+                onPressIn={onPressIn} 
+                onPressOut={onPressOut}
+                activeOpacity={0.9}
+            >
+                {renderOrb()}
+            </TouchableOpacity>
+        );
     }
+
+    return renderOrb();
 }
 
 // Export for convenience
@@ -109,6 +119,7 @@ export { RingOrb } from './RingOrb';
 export const orbTypeOptions = [
     { value: 'glass' as OrbType, label: 'Glass', description: 'Classic glass sphere' },
     { value: 'ring' as OrbType, label: 'Ring', description: 'Pulsing ring with tension' },
+    { value: 'css-ring' as OrbType, label: 'CSS Ring', description: 'Pure CSS ring with glow effects' },
     { value: 'blob' as OrbType, label: 'Blob', description: 'Organic morphing blob (web only)' },
     { value: 'auto' as OrbType, label: 'Auto', description: 'Best for your platform' },
 ];

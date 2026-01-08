@@ -6,73 +6,54 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import theme from '@/constants/theme';
-import { GlassContainer } from '@/components/ui/GlassContainer';
 
 interface ChatBubbleProps {
     role: 'user' | 'assistant';
     content: string;
     isStreaming?: boolean;
+    fadeOpacity?: number;
 }
 
-export function ChatBubble({ role, content, isStreaming = false }: ChatBubbleProps) {
+export function ChatBubble({ role, content, isStreaming = false, fadeOpacity = 1 }: ChatBubbleProps) {
     const isUser = role === 'user';
 
     return (
         <Animated.View
             entering={FadeInRight.duration(300)}
             exiting={FadeOutLeft.duration(200)}
-            style={[styles.container, isUser && styles.containerUser]}
+            style={[styles.container, isUser && styles.containerUser, { opacity: fadeOpacity }]}
         >
-            {isUser ? (
-                <View style={styles.userBubble}>
-                    <Text style={styles.userText}>{content}</Text>
-                </View>
-            ) : (
-                <GlassContainer style={styles.assistantBubble} variant="card">
-                    <Text style={styles.assistantText}>
-                        {content}
-                        {isStreaming && <Text style={styles.cursor}>▊</Text>}
-                    </Text>
-                </GlassContainer>
-            )}
+            <Text style={[styles.text, isUser ? styles.userText : styles.assistantText]}>
+                {content}
+                {isStreaming && <Text style={styles.cursor}>▊</Text>}
+            </Text>
         </Animated.View>
     );
 }
 
 const styles = StyleSheet.create({
     container: {
-        marginVertical: theme.spacing.xs,
-        maxWidth: '85%',
-        alignSelf: 'flex-start',
+        marginVertical: theme.spacing.xs / 2,
+        width: '100%',
+        alignSelf: 'center',
     },
     containerUser: {
-        alignSelf: 'flex-end',
+        alignSelf: 'center',
     },
-    userBubble: {
-        backgroundColor: theme.colors.primary.base,
-        paddingVertical: theme.spacing.sm + 2,
-        paddingHorizontal: theme.spacing.md,
-        borderRadius: theme.borderRadius.lg,
-        borderBottomRightRadius: theme.borderRadius.sm,
+    text: {
+        fontSize: theme.typography.sizes.sm,
+        lineHeight: 20,
+        textAlign: 'center',
     },
     userText: {
-        color: '#fff',
-        fontSize: theme.typography.sizes.base,
-        lineHeight: 22,
-    },
-    assistantBubble: {
-        paddingVertical: theme.spacing.sm + 2,
-        paddingHorizontal: theme.spacing.md,
-        borderBottomLeftRadius: theme.borderRadius.sm,
+        color: theme.colors.text.secondary,
     },
     assistantText: {
-        color: theme.colors.text.primary,
-        fontSize: theme.typography.sizes.base,
-        lineHeight: 22,
+        color: theme.colors.text.muted,
     },
     cursor: {
         color: theme.colors.primary.base,
-        opacity: 0.8,
+        opacity: 0.6,
     },
 });
 

@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useMemo } from 'react';
 import {
     View,
     Text,
@@ -6,10 +6,13 @@ import {
     Dimensions,
     TouchableOpacity,
     PanResponder,
+    ActivityIndicator,
+    RefreshControl,
+    ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
 import Animated, {
     useSharedValue,
     useAnimatedStyle,
@@ -19,33 +22,93 @@ import Svg, { Circle, Line, Defs, RadialGradient, Stop } from 'react-native-svg'
 
 import theme, { categories, CategoryKey } from '@/constants/theme';
 import { GlassContainer } from '@/components/ui/GlassContainer';
+import { useGraph } from '@/hooks/useGraph';
+import { GraphNode, GraphEdge } from '@/services/api';
 
 const { width, height } = Dimensions.get('window');
 const GRAPH_SIZE = width - theme.spacing.md * 2;
 
-// Mock graph data - nodes and edges
-const MOCK_NODES = [
-    { id: '1', label: 'Keys', category: 'keys' as CategoryKey, x: 0.5, y: 0.3 },
-    { id: '2', label: 'Wallet', category: 'personal' as CategoryKey, x: 0.3, y: 0.5 },
-    { id: '3', label: 'Phone', category: 'electronics' as CategoryKey, x: 0.7, y: 0.5 },
-    { id: '4', label: 'Home', category: 'home' as CategoryKey, x: 0.5, y: 0.55 },
-    { id: '5', label: 'Docs', category: 'documents' as CategoryKey, x: 0.2, y: 0.7 },
-    { id: '6', label: 'Laptop', category: 'electronics' as CategoryKey, x: 0.8, y: 0.7 },
-];
+// Helper to compute node positions using force-directed layout simulation
+function computeNodePositions(nodes: GraphNode[], edges: GraphEdge[]): Map<string, { x: number; y: number }> {
+    const positions = new Map<string, { x: number; y: number }>();
 
-const MOCK_EDGES = [
-    { from: '1', to: '4' },
-    { from: '2', to: '4' },
-    { from: '3', to: '4' },
-    { from: '4', to: '5' },
-    { from: '4', to: '6' },
-    { from: '1', to: '2' },
-    { from: '3', to: '6' },
-];
+    if (nodes.length === 0) return positions;
+
+    // Initialize positions in a circle
+    nodes.forEach((node, i) => {
+        const angle = (2 * Math.PI * i) / nodes.length;
+        const radius = 0.35;
+        positions.set(node.id, {
+            x: 0.5 + radius * Math.cos(angle),
+            y: 0.5 + radius * Math.sin(angle),
+        });
+    });
+
+    // Simple force simulation (a few iterations)
+    for (let iteration = 0; iteration < 50; iteration++) {
+        // Repulsion between all nodes
+        for (let i = 0; i < nodes.length; i++) {
+            for (let j = i + 1; j < nodes.length; j++) {
+                const posI = positions.get(nodes[i].id)!;
+                const posJ = positions.get(nodes[j].id)!;
+
+                const dx = posJ.x - posI.x;
+                const dy = posJ.y - posI.y;
+                const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+
+                const repulsion = 0.01 / (dist * dist);
+                const fx = (dx / dist) * repulsion;
+                const fy = (dy / dist) * repulsion;
+
+                positions.set(nodes[i].id, { x: posI.x - fx, y: posI.y - fy });
+                positions.set(nodes[j].id, { x: posJ.x + fx, y: posJ.y + fy });
+            }
+        }
+
+        // Attraction along edges
+        edges.forEach(edge => {
+            const posSource = positions.get(edge.source);
+            const posTarget = positions.get(edge.target);
+
+            if (posSource && posTarget) {
+                const dx = posTarget.x - posSource.x;
+                const dy = posTarget.y - posSource.y;
+                const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+
+                const attraction = dist * 0.1;
+                const fx = (dx / dist) * attraction;
+                const fy = (dy / dist) * attraction;
+
+                positions.set(edge.source, { x: posSource.x + fx * 0.5, y: posSource.y + fy * 0.5 });
+                positions.set(edge.target, { x: posTarget.x - fx * 0.5, y: posTarget.y - fy * 0.5 });
+            }
+        });
+
+        // Keep nodes within bounds
+        positions.forEach((pos, id) => {
+            pos.x = Math.max(0.1, Math.min(0.9, pos.x));
+            pos.y = Math.max(0.1, Math.min(0.9, pos.y));
+            positions.set(id, pos);
+        });
+    }
+
+    return positions;
+}
 
 export default function GraphScreen() {
+    const { nodes, edges, isLoading, error, refresh, fetchGraph } = useGraph({ autoFetch: false });
     const [selectedNode, setSelectedNode] = useState<string | null>(null);
     const [scale, setScale] = useState(1);
+    const [refreshing, setRefreshing] = useState(false);
+
+    // Lazy refetch when page comes into focus
+    useFocusEffect(
+        React.useCallback(() => {
+            // Fetch graph data when screen comes into focus (lazy refetch)
+            // This will use cached data if available and valid, or fetch if needed
+            fetchGraph();
+        }, [fetchGraph])
+    );
 
     const translateX = useSharedValue(0);
     const translateY = useSharedValue(0);
@@ -73,6 +136,9 @@ export default function GraphScreen() {
         ],
     }));
 
+    // Compute node positions
+    const nodePositions = useMemo(() => computeNodePositions(nodes, edges), [nodes, edges]);
+
     const handleNodePress = (nodeId: string) => {
         setSelectedNode(selectedNode === nodeId ? null : nodeId);
     };
@@ -85,15 +151,31 @@ export default function GraphScreen() {
         translateY.value = withSpring(0);
     };
 
+    const onRefresh = async () => {
+        setRefreshing(true);
+        await refresh();
+        setRefreshing(false);
+    };
+
     // Get node position in pixels
-    const getNodePosition = (node: typeof MOCK_NODES[0]) => ({
-        x: node.x * GRAPH_SIZE,
-        y: node.y * GRAPH_SIZE,
-    });
+    const getNodePosition = (nodeId: string) => {
+        const pos = nodePositions.get(nodeId);
+        if (!pos) return { x: GRAPH_SIZE / 2, y: GRAPH_SIZE / 2 };
+        return {
+            x: pos.x * GRAPH_SIZE,
+            y: pos.y * GRAPH_SIZE,
+        };
+    };
 
     // Check if edge is connected to selected node
-    const isEdgeHighlighted = (edge: typeof MOCK_EDGES[0]) => {
-        return selectedNode && (edge.from === selectedNode || edge.to === selectedNode);
+    const isEdgeHighlighted = (edge: GraphEdge) => {
+        return selectedNode && (edge.source === selectedNode || edge.target === selectedNode);
+    };
+
+    // Get category color
+    const getCategoryColor = (category: string | null): string => {
+        if (!category) return theme.colors.primary.base;
+        return (categories as Record<string, { color: string }>)[category]?.color || theme.colors.primary.base;
     };
 
     return (
@@ -101,186 +183,221 @@ export default function GraphScreen() {
             {/* Header */}
             <View style={styles.header}>
                 <Text style={styles.title}>Memory Graph</Text>
-                <Text style={styles.subtitle}>Visualize connections</Text>
+                <Text style={styles.subtitle}>
+                    {isLoading ? 'Loading...' : `${nodes.length} nodes, ${edges.length} connections`}
+                </Text>
             </View>
 
-            {/* Graph Container */}
-            <View style={styles.graphWrapper}>
-                <GlassContainer style={styles.graphContainer}>
-                    <Animated.View
-                        {...panResponder.panHandlers}
-                        style={[styles.graph, graphStyle]}
-                    >
-                        <Svg width={GRAPH_SIZE} height={GRAPH_SIZE}>
-                            <Defs>
-                                <RadialGradient id="nodeGradient" cx="50%" cy="50%" r="50%">
-                                    <Stop offset="0%" stopColor={theme.colors.primary.light} stopOpacity="0.8" />
-                                    <Stop offset="100%" stopColor={theme.colors.primary.dark} stopOpacity="0.6" />
-                                </RadialGradient>
-                            </Defs>
-
-                            {/* Edges */}
-                            {MOCK_EDGES.map((edge, index) => {
-                                const fromNode = MOCK_NODES.find((n) => n.id === edge.from);
-                                const toNode = MOCK_NODES.find((n) => n.id === edge.to);
-                                if (!fromNode || !toNode) return null;
-
-                                const from = getNodePosition(fromNode);
-                                const to = getNodePosition(toNode);
-                                const highlighted = isEdgeHighlighted(edge);
-
-                                return (
-                                    <Line
-                                        key={`edge-${index}`}
-                                        x1={from.x}
-                                        y1={from.y}
-                                        x2={to.x}
-                                        y2={to.y}
-                                        stroke={highlighted ? theme.colors.primary.base : theme.colors.glass.border}
-                                        strokeWidth={highlighted ? 2 : 1}
-                                        strokeOpacity={highlighted ? 0.8 : 0.4}
-                                    />
-                                );
-                            })}
-
-                            {/* Nodes */}
-                            {MOCK_NODES.map((node) => {
-                                const pos = getNodePosition(node);
-                                const categoryColor = categories[node.category]?.color || theme.colors.primary.base;
-                                const isSelected = selectedNode === node.id;
-                                const isConnected =
-                                    selectedNode &&
-                                    MOCK_EDGES.some(
-                                        (e) =>
-                                            (e.from === selectedNode && e.to === node.id) ||
-                                            (e.to === selectedNode && e.from === node.id)
-                                    );
-
-                                return (
-                                    <Circle
-                                        key={node.id}
-                                        cx={pos.x}
-                                        cy={pos.y}
-                                        r={isSelected ? 28 : isConnected ? 24 : 20}
-                                        fill={categoryColor}
-                                        fillOpacity={isSelected || isConnected ? 0.8 : 0.5}
-                                        stroke={isSelected ? '#fff' : categoryColor}
-                                        strokeWidth={isSelected ? 3 : 1}
-                                        onPress={() => handleNodePress(node.id)}
-                                    />
-                                );
-                            })}
-                        </Svg>
-
-                        {/* Node Labels */}
-                        {MOCK_NODES.map((node) => {
-                            const pos = getNodePosition(node);
-                            const isSelected = selectedNode === node.id;
-
-                            return (
-                                <TouchableOpacity
-                                    key={`label-${node.id}`}
-                                    style={[
-                                        styles.nodeLabel,
-                                        {
-                                            left: pos.x - 30,
-                                            top: pos.y + (isSelected ? 32 : 24),
-                                        },
-                                    ]}
-                                    onPress={() => handleNodePress(node.id)}
-                                >
-                                    <Text
-                                        style={[
-                                            styles.nodeLabelText,
-                                            isSelected && styles.nodeLabelTextSelected,
-                                        ]}
-                                    >
-                                        {node.label}
-                                    </Text>
-                                </TouchableOpacity>
-                            );
-                        })}
-                    </Animated.View>
-                </GlassContainer>
-
-                {/* Zoom Controls */}
-                <View style={styles.controls}>
-                    <TouchableOpacity style={styles.controlButton} onPress={handleZoomIn}>
-                        <Ionicons name="add" size={24} color={theme.colors.text.primary} />
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.controlButton} onPress={handleZoomOut}>
-                        <Ionicons name="remove" size={24} color={theme.colors.text.primary} />
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.controlButton} onPress={handleReset}>
-                        <Ionicons name="locate" size={20} color={theme.colors.text.primary} />
-                    </TouchableOpacity>
-                </View>
-            </View>
-
-            {/* Selected Node Info */}
-            {selectedNode && (
-                <View style={styles.infoPanel}>
-                    <GlassContainer style={styles.infoContainer}>
-                        {(() => {
-                            const node = MOCK_NODES.find((n) => n.id === selectedNode);
-                            if (!node) return null;
-                            const connections = MOCK_EDGES.filter(
-                                (e) => e.from === selectedNode || e.to === selectedNode
-                            ).length;
-                            const categoryInfo = categories[node.category];
-
-                            return (
-                                <>
-                                    <View style={styles.infoHeader}>
-                                        <View
-                                            style={[
-                                                styles.infoBadge,
-                                                { backgroundColor: categoryInfo.color + '30' },
-                                            ]}
-                                        >
-                                            <Ionicons
-                                                name={categoryInfo.icon as any}
-                                                size={20}
-                                                color={categoryInfo.color}
-                                            />
-                                        </View>
-                                        <View style={styles.infoText}>
-                                            <Text style={styles.infoTitle}>{node.label}</Text>
-                                            <Text style={styles.infoSubtitle}>{categoryInfo.label}</Text>
-                                        </View>
-                                    </View>
-                                    <View style={styles.infoStats}>
-                                        <Text style={styles.infoStat}>
-                                            <Text style={styles.infoStatValue}>{connections}</Text> connections
-                                        </Text>
-                                    </View>
-                                </>
-                            );
-                        })()}
-                    </GlassContainer>
+            {/* Error State */}
+            {error && (
+                <View style={styles.errorContainer}>
+                    <Ionicons name="alert-circle-outline" size={24} color={theme.colors.error} />
+                    <Text style={styles.errorText}>{error.message}</Text>
                 </View>
             )}
 
-            {/* Legend */}
-            <View style={styles.legend}>
-                <Text style={styles.legendTitle}>Legend</Text>
-                <View style={styles.legendItems}>
-                    {(Object.keys(categories) as CategoryKey[]).slice(0, 4).map((key) => (
-                        <View key={key} style={styles.legendItem}>
-                            <View
-                                style={[
-                                    styles.legendDot,
-                                    { backgroundColor: categories[key].color },
-                                ]}
-                            />
-                            <Text style={styles.legendLabel}>{categories[key].label}</Text>
-                        </View>
-                    ))}
-                </View>
-            </View>
+            {/* Graph Container */}
+            <ScrollView
+                style={styles.scrollContainer}
+                contentContainerStyle={styles.scrollContent}
+                refreshControl={
+                    <RefreshControl
+                        refreshing={refreshing}
+                        onRefresh={onRefresh}
+                        tintColor={theme.colors.primary.base}
+                    />
+                }
+            >
+                <View style={styles.graphWrapper}>
+                    <GlassContainer style={styles.graphContainer}>
+                        {isLoading && nodes.length === 0 ? (
+                            <View style={styles.loadingContainer}>
+                                <ActivityIndicator size="large" color={theme.colors.primary.base} />
+                                <Text style={styles.loadingText}>Loading graph...</Text>
+                            </View>
+                        ) : nodes.length === 0 ? (
+                            <View style={styles.emptyContainer}>
+                                <Ionicons name="git-network-outline" size={48} color={theme.colors.text.muted} />
+                                <Text style={styles.emptyText}>No data yet</Text>
+                                <Text style={styles.emptySubtext}>
+                                    Start by telling the voice assistant where you put things
+                                </Text>
+                            </View>
+                        ) : (
+                            <Animated.View
+                                {...panResponder.panHandlers}
+                                style={[styles.graph, graphStyle]}
+                            >
+                                <Svg width={GRAPH_SIZE} height={GRAPH_SIZE}>
+                                    <Defs>
+                                        <RadialGradient id="nodeGradient" cx="50%" cy="50%" r="50%">
+                                            <Stop offset="0%" stopColor={theme.colors.primary.light} stopOpacity="0.8" />
+                                            <Stop offset="100%" stopColor={theme.colors.primary.dark} stopOpacity="0.6" />
+                                        </RadialGradient>
+                                    </Defs>
 
-            {/* Bottom padding */}
-            <View style={styles.bottomPadding} />
+                                    {/* Edges */}
+                                    {edges.map((edge, index) => {
+                                        const from = getNodePosition(edge.source);
+                                        const to = getNodePosition(edge.target);
+                                        const highlighted = isEdgeHighlighted(edge);
+
+                                        return (
+                                            <Line
+                                                key={`edge-${index}`}
+                                                x1={from.x}
+                                                y1={from.y}
+                                                x2={to.x}
+                                                y2={to.y}
+                                                stroke={highlighted ? theme.colors.primary.base : theme.colors.glass.border}
+                                                strokeWidth={highlighted ? 2 : 1}
+                                                strokeOpacity={highlighted ? 0.8 : 0.4}
+                                            />
+                                        );
+                                    })}
+
+                                    {/* Nodes */}
+                                    {nodes.map((node) => {
+                                        const pos = getNodePosition(node.id);
+                                        const categoryColor = getCategoryColor(node.category);
+                                        const isSelected = selectedNode === node.id;
+                                        const isConnected =
+                                            selectedNode &&
+                                            edges.some(
+                                                (e) =>
+                                                    (e.source === selectedNode && e.target === node.id) ||
+                                                    (e.target === selectedNode && e.source === node.id)
+                                            );
+
+                                        return (
+                                            <Circle
+                                                key={node.id}
+                                                cx={pos.x}
+                                                cy={pos.y}
+                                                r={isSelected ? 28 : isConnected ? 24 : 20}
+                                                fill={categoryColor}
+                                                fillOpacity={isSelected || isConnected ? 0.8 : 0.5}
+                                                stroke={isSelected ? '#fff' : categoryColor}
+                                                strokeWidth={isSelected ? 3 : 1}
+                                                onPress={() => handleNodePress(node.id)}
+                                            />
+                                        );
+                                    })}
+                                </Svg>
+
+                                {/* Node Labels */}
+                                {nodes.map((node) => {
+                                    const pos = getNodePosition(node.id);
+                                    const isSelected = selectedNode === node.id;
+
+                                    return (
+                                        <TouchableOpacity
+                                            key={`label-${node.id}`}
+                                            style={[
+                                                styles.nodeLabel,
+                                                {
+                                                    left: pos.x - 30,
+                                                    top: pos.y + (isSelected ? 32 : 24),
+                                                },
+                                            ]}
+                                            onPress={() => handleNodePress(node.id)}
+                                        >
+                                            <Text
+                                                style={[
+                                                    styles.nodeLabelText,
+                                                    isSelected && styles.nodeLabelTextSelected,
+                                                ]}
+                                            >
+                                                {node.label}
+                                            </Text>
+                                        </TouchableOpacity>
+                                    );
+                                })}
+                            </Animated.View>
+                        )}
+                    </GlassContainer>
+
+                    {/* Zoom Controls */}
+                    <View style={styles.controls}>
+                        <TouchableOpacity style={styles.controlButton} onPress={handleZoomIn}>
+                            <Ionicons name="add" size={24} color={theme.colors.text.primary} />
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.controlButton} onPress={handleZoomOut}>
+                            <Ionicons name="remove" size={24} color={theme.colors.text.primary} />
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.controlButton} onPress={handleReset}>
+                            <Ionicons name="locate" size={20} color={theme.colors.text.primary} />
+                        </TouchableOpacity>
+                    </View>
+                </View>
+
+                {/* Selected Node Info */}
+                {selectedNode && (
+                    <View style={styles.infoPanel}>
+                        <GlassContainer style={styles.infoContainer}>
+                            {(() => {
+                                const node = nodes.find((n) => n.id === selectedNode);
+                                if (!node) return null;
+                                const connections = edges.filter(
+                                    (e) => e.source === selectedNode || e.target === selectedNode
+                                ).length;
+                                const categoryInfo = node.category ? (categories as Record<string, { icon: string; label: string; color: string }>)[node.category] : null;
+
+                                return (
+                                    <>
+                                        <View style={styles.infoHeader}>
+                                            <View
+                                                style={[
+                                                    styles.infoBadge,
+                                                    { backgroundColor: (categoryInfo?.color || theme.colors.primary.base) + '30' },
+                                                ]}
+                                            >
+                                                <Ionicons
+                                                    name={(categoryInfo?.icon || 'cube-outline') as any}
+                                                    size={20}
+                                                    color={categoryInfo?.color || theme.colors.primary.base}
+                                                />
+                                            </View>
+                                            <View style={styles.infoText}>
+                                                <Text style={styles.infoTitle}>{node.label}</Text>
+                                                <Text style={styles.infoSubtitle}>
+                                                    {node.type} • {categoryInfo?.label || node.category || 'Unknown'}
+                                                </Text>
+                                            </View>
+                                        </View>
+                                        <View style={styles.infoStats}>
+                                            <Text style={styles.infoStat}>
+                                                <Text style={styles.infoStatValue}>{connections}</Text> connections
+                                            </Text>
+                                        </View>
+                                    </>
+                                );
+                            })()}
+                        </GlassContainer>
+                    </View>
+                )}
+
+                {/* Legend */}
+                <View style={styles.legend}>
+                    <Text style={styles.legendTitle}>Legend</Text>
+                    <View style={styles.legendItems}>
+                        {(Object.keys(categories) as CategoryKey[]).slice(0, 4).map((key) => (
+                            <View key={key} style={styles.legendItem}>
+                                <View
+                                    style={[
+                                        styles.legendDot,
+                                        { backgroundColor: categories[key].color },
+                                    ]}
+                                />
+                                <Text style={styles.legendLabel}>{categories[key].label}</Text>
+                            </View>
+                        ))}
+                    </View>
+                </View>
+
+                {/* Bottom padding */}
+                <View style={styles.bottomPadding} />
+            </ScrollView>
         </SafeAreaView>
     );
 }
@@ -305,14 +422,66 @@ const styles = StyleSheet.create({
         fontSize: theme.typography.sizes.sm,
         marginTop: 2,
     },
+    errorContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: theme.spacing.sm,
+        paddingHorizontal: theme.spacing.md,
+        paddingVertical: theme.spacing.sm,
+        backgroundColor: 'rgba(239, 68, 68, 0.1)',
+        marginHorizontal: theme.spacing.md,
+        borderRadius: theme.borderRadius.md,
+    },
+    errorText: {
+        color: theme.colors.error,
+        fontSize: theme.typography.sizes.sm,
+    },
+    scrollContainer: {
+        flex: 1,
+    },
+    scrollContent: {
+        flexGrow: 1,
+    },
     graphWrapper: {
         flex: 1,
         padding: theme.spacing.md,
         position: 'relative',
+        minHeight: GRAPH_SIZE + 40,
     },
     graphContainer: {
         flex: 1,
         overflow: 'hidden',
+        minHeight: GRAPH_SIZE,
+    },
+    loadingContainer: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: GRAPH_SIZE,
+    },
+    loadingText: {
+        color: theme.colors.text.muted,
+        marginTop: theme.spacing.md,
+    },
+    emptyContainer: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: GRAPH_SIZE,
+        padding: theme.spacing.xl,
+    },
+    emptyText: {
+        color: theme.colors.text.secondary,
+        fontSize: theme.typography.sizes.lg,
+        fontWeight: theme.typography.weights.medium,
+        marginTop: theme.spacing.md,
+    },
+    emptySubtext: {
+        color: theme.colors.text.muted,
+        fontSize: theme.typography.sizes.sm,
+        textAlign: 'center',
+        marginTop: theme.spacing.xs,
     },
     graph: {
         width: GRAPH_SIZE,

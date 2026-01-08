@@ -5,6 +5,8 @@ import {
     StyleSheet,
     ScrollView,
     TextInput,
+    ActivityIndicator,
+    RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,39 +14,27 @@ import { Ionicons } from '@expo/vector-icons';
 import theme, { CategoryKey } from '@/constants/theme';
 import { FilterBar } from '@/components/items/FilterBar';
 import { ItemCard } from '@/components/items/ItemCard';
-
-// Mock data - will be replaced with real data from backend
-const MOCK_ITEMS = [
-    { id: '1', name: 'House Keys', location: 'Kitchen drawer', category: 'keys' as CategoryKey },
-    { id: '2', name: 'Wallet', location: 'Bedroom nightstand', category: 'personal' as CategoryKey },
-    { id: '3', name: 'iPhone Charger', location: 'Office desk', category: 'electronics' as CategoryKey },
-    { id: '4', name: 'Laptop', location: 'Home office', category: 'electronics' as CategoryKey },
-    { id: '5', name: 'Passport', location: 'Safe box', category: 'documents' as CategoryKey },
-    { id: '6', name: 'Umbrella', location: 'Coat closet', category: 'home' as CategoryKey },
-    { id: '7', name: 'Sunglasses', location: 'Car glove box', category: 'personal' as CategoryKey },
-    { id: '8', name: 'Power Bank', location: 'Backpack', category: 'electronics' as CategoryKey },
-    { id: '9', name: 'Spare Car Key', location: 'Kitchen cabinet', category: 'keys' as CategoryKey },
-    { id: '10', name: 'Tax Documents', location: 'Filing cabinet', category: 'documents' as CategoryKey },
-];
+import { useItems } from '@/hooks/useItems';
 
 export default function ItemsScreen() {
-    const [searchQuery, setSearchQuery] = useState('');
+    const { items, isLoading, error, searchQuery, search, refresh } = useItems();
     const [selectedCategory, setSelectedCategory] = useState<CategoryKey | 'all'>('all');
+    const [refreshing, setRefreshing] = useState(false);
 
-    // Filter items based on search and category
+    // Handle pull-to-refresh
+    const onRefresh = async () => {
+        setRefreshing(true);
+        await refresh();
+        setRefreshing(false);
+    };
+
+    // Filter items based on category (search is handled by the hook)
     const filteredItems = useMemo(() => {
-        return MOCK_ITEMS.filter((item) => {
-            const matchesSearch =
-                searchQuery === '' ||
-                item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                item.location.toLowerCase().includes(searchQuery.toLowerCase());
-
-            const matchesCategory =
-                selectedCategory === 'all' || item.category === selectedCategory;
-
-            return matchesSearch && matchesCategory;
-        });
-    }, [searchQuery, selectedCategory]);
+        if (selectedCategory === 'all') {
+            return items;
+        }
+        return items.filter((item) => item.category === selectedCategory);
+    }, [items, selectedCategory]);
 
     // Group items by category
     const groupedItems = useMemo(() => {
@@ -53,11 +43,11 @@ export default function ItemsScreen() {
         }
 
         return filteredItems.reduce((acc, item) => {
-            const cat = item.category;
+            const cat = (item.category || 'other') as CategoryKey;
             if (!acc[cat]) acc[cat] = [];
             acc[cat].push(item);
             return acc;
-        }, {} as Record<CategoryKey, typeof MOCK_ITEMS>);
+        }, {} as Record<CategoryKey, typeof filteredItems>);
     }, [filteredItems, selectedCategory]);
 
     return (
@@ -65,7 +55,9 @@ export default function ItemsScreen() {
             {/* Header */}
             <View style={styles.header}>
                 <Text style={styles.title}>My Items</Text>
-                <Text style={styles.subtitle}>{MOCK_ITEMS.length} items stored</Text>
+                <Text style={styles.subtitle}>
+                    {isLoading ? 'Loading...' : `${items.length} items stored`}
+                </Text>
             </View>
 
             {/* Search Bar */}
@@ -81,15 +73,18 @@ export default function ItemsScreen() {
                         placeholder="Search items..."
                         placeholderTextColor={theme.colors.text.muted}
                         value={searchQuery}
-                        onChangeText={setSearchQuery}
+                        onChangeText={search}
                     />
                     {searchQuery.length > 0 && (
                         <Ionicons
                             name="close-circle"
                             size={20}
                             color={theme.colors.text.muted}
-                            onPress={() => setSearchQuery('')}
+                            onPress={() => search('')}
                         />
+                    )}
+                    {isLoading && (
+                        <ActivityIndicator size="small" color={theme.colors.primary.base} />
                     )}
                 </View>
             </View>
@@ -100,13 +95,28 @@ export default function ItemsScreen() {
                 onSelectCategory={setSelectedCategory}
             />
 
+            {/* Error State */}
+            {error && (
+                <View style={styles.errorContainer}>
+                    <Ionicons name="alert-circle-outline" size={24} color={theme.colors.error} />
+                    <Text style={styles.errorText}>{error.message}</Text>
+                </View>
+            )}
+
             {/* Items List */}
             <ScrollView
                 style={styles.scrollView}
                 contentContainerStyle={styles.scrollContent}
                 showsVerticalScrollIndicator={false}
+                refreshControl={
+                    <RefreshControl
+                        refreshing={refreshing}
+                        onRefresh={onRefresh}
+                        tintColor={theme.colors.primary.base}
+                    />
+                }
             >
-                {Object.entries(groupedItems).map(([category, items]) => (
+                {Object.entries(groupedItems).map(([category, categoryItems]) => (
                     <View key={category} style={styles.categorySection}>
                         {selectedCategory === 'all' && (
                             <Text style={styles.categoryTitle}>
@@ -114,13 +124,13 @@ export default function ItemsScreen() {
                             </Text>
                         )}
                         <View style={styles.itemsGrid}>
-                            {items.map((item, index) => (
+                            {categoryItems.map((item, index) => (
                                 <ItemCard
                                     key={item.id}
                                     id={item.id}
                                     name={item.name}
-                                    location={item.location}
-                                    category={item.category}
+                                    location={item.location_path || item.location || 'Unknown'}
+                                    category={item.category as CategoryKey}
                                     index={index}
                                     onPress={() => {
                                         // TODO: Navigate to item details
@@ -132,7 +142,7 @@ export default function ItemsScreen() {
                     </View>
                 ))}
 
-                {filteredItems.length === 0 && (
+                {!isLoading && filteredItems.length === 0 && (
                     <View style={styles.emptyState}>
                         <Ionicons
                             name="search-outline"
@@ -141,7 +151,9 @@ export default function ItemsScreen() {
                         />
                         <Text style={styles.emptyStateText}>No items found</Text>
                         <Text style={styles.emptyStateSubtext}>
-                            Try adjusting your search or filters
+                            {searchQuery
+                                ? 'Try adjusting your search or filters'
+                                : 'Start by telling the voice assistant where you put things'}
                         </Text>
                     </View>
                 )}
@@ -193,6 +205,21 @@ const styles = StyleSheet.create({
         color: theme.colors.text.primary,
         fontSize: theme.typography.sizes.base,
     },
+    errorContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: theme.spacing.sm,
+        paddingHorizontal: theme.spacing.md,
+        paddingVertical: theme.spacing.sm,
+        backgroundColor: 'rgba(239, 68, 68, 0.1)',
+        marginHorizontal: theme.spacing.md,
+        borderRadius: theme.borderRadius.md,
+    },
+    errorText: {
+        color: theme.colors.error,
+        fontSize: theme.typography.sizes.sm,
+    },
     scrollView: {
         flex: 1,
     },
@@ -232,6 +259,8 @@ const styles = StyleSheet.create({
         color: theme.colors.text.muted,
         fontSize: theme.typography.sizes.sm,
         marginTop: theme.spacing.xs,
+        textAlign: 'center',
+        paddingHorizontal: theme.spacing.xl,
     },
     bottomPadding: {
         height: 100,

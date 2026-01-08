@@ -32,7 +32,7 @@ if (Platform.OS === 'web') {
 
 export type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
-interface AIIOrbProps {
+interface AIOrbProps {
     state?: OrbState;
     size?: number;
 }
@@ -227,7 +227,7 @@ function FallbackOrb({ size }: { size: number }) {
 }
 
 // Main exported component
-export function AIOrb({ state = 'idle', size }: AIIOrbProps) {
+export function AIOrb({ state = 'idle', size }: AIOrbProps) {
     const { width: screenWidth } = useWindowDimensions();
     const orbSize = size || screenWidth * 0.6;
 
