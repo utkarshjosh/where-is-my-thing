@@ -6,9 +6,18 @@ from functools import lru_cache
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
-    # Google AI Studio
-    google_api_key: str = ""
-    model_name: str = "gemini-2.0-flash"
+    # Groq API (for LLM, TTS, STT)
+    groq_api_key: str = ""
+    
+    # LLM Model (via LiteLLM)
+    llm_model: str = "groq/qwen-qwq-32b"
+    
+    # TTS Model (Orpheus)
+    tts_model: str = "canopylabs/orpheus-v1-english"
+    tts_voice: str = "autumn"
+    
+    # STT Model (Whisper)
+    stt_model: str = "whisper-large-v3-turbo"
     
     # Embeddings
     embedding_model: str = "text-embedding-004"
@@ -19,9 +28,14 @@ class Settings(BaseSettings):
     neo4j_username: str = "neo4j"
     neo4j_password: str = "password123"
     
+    # Clerk Authentication
+    clerk_secret_key: str = ""
+    clerk_publishable_key: str = ""
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"  # Ignore extra env variables not defined in this class
 
 
 @lru_cache

@@ -1,11 +1,14 @@
 """FastAPI routes for Spatial Memory API.
 
 Cognitive verb endpoints that mirror the graph service operations.
+All endpoints require authentication and are scoped to the authenticated user.
 """
 from typing import Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from services.graph_service import GraphService
+from services.user_service import UserService
+from api.middleware.auth import get_current_user, AuthenticatedUser
 
 
 router = APIRouter()
@@ -51,15 +54,35 @@ class IntentRequest(BaseModel):
     description: Optional[str] = None
 
 
+# ========== Helper Functions ==========
+
+def get_user_id(current_user: AuthenticatedUser) -> str:
+    """Get or create the local user ID from Clerk authentication."""
+    with UserService() as us:
+        user = us.find_or_create_user(
+            clerk_user_id=current_user.clerk_user_id,
+            email=current_user.email,
+            first_name=current_user.first_name,
+            last_name=current_user.last_name,
+        )
+    return user.id
+
+
 # ========== Endpoints ==========
 
 @router.post("/thing/remember")
-async def remember_thing(request: RememberRequest):
+async def remember_thing(
+    request: RememberRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user)
+):
     """Store a new thing at a specific location.
     
     Creates the thing, location hierarchy, and all necessary graph relationships.
+    The thing is automatically associated with the authenticated user.
     """
-    with GraphService() as gs:
+    user_id = get_user_id(current_user)
+    
+    with GraphService(user_id=user_id) as gs:
         result = gs.remember_thing(
             thing_name=request.thing_name,
             location=request.location,
@@ -74,24 +97,36 @@ async def remember_thing(request: RememberRequest):
 
 
 @router.post("/thing/find")
-async def find_thing(request: FindRequest):
+async def find_thing(
+    request: FindRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user)
+):
     """Find things matching a search query.
     
-    Searches by name, description, and tags.
+    Searches by name, description, and tags. Only returns things
+    owned by the authenticated user.
     """
-    with GraphService() as gs:
+    user_id = get_user_id(current_user)
+    
+    with GraphService(user_id=user_id) as gs:
         result = gs.find_thing(request.query)
     
     return result
 
 
 @router.post("/thing/move")
-async def move_thing(request: MoveRequest):
+async def move_thing(
+    request: MoveRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user)
+):
     """Move a thing to a new location.
     
     Updates the location and creates a move event.
+    Only works for things owned by the authenticated user.
     """
-    with GraphService() as gs:
+    user_id = get_user_id(current_user)
+    
+    with GraphService(user_id=user_id) as gs:
         result = gs.move_thing(request.thing_name, request.new_location)
     
     if result.get("status") == "error":
@@ -101,9 +136,17 @@ async def move_thing(request: MoveRequest):
 
 
 @router.post("/thing/associate")
-async def associate_things(request: AssociateRequest):
-    """Link two related things together."""
-    with GraphService() as gs:
+async def associate_things(
+    request: AssociateRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user)
+):
+    """Link two related things together.
+    
+    Only works for things owned by the authenticated user.
+    """
+    user_id = get_user_id(current_user)
+    
+    with GraphService(user_id=user_id) as gs:
         result = gs.associate_things(
             request.thing1,
             request.thing2,
@@ -117,18 +160,34 @@ async def associate_things(request: AssociateRequest):
 
 
 @router.post("/place/contents")
-async def list_contents(request: ContentsRequest):
-    """List all things in a location."""
-    with GraphService() as gs:
+async def list_contents(
+    request: ContentsRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user)
+):
+    """List all things in a location.
+    
+    Only returns things owned by the authenticated user.
+    """
+    user_id = get_user_id(current_user)
+    
+    with GraphService(user_id=user_id) as gs:
         result = gs.list_contents(request.location)
     
     return result
 
 
 @router.post("/intent/attach")
-async def attach_intent(request: IntentRequest):
-    """Attach a purpose/intent to a thing."""
-    with GraphService() as gs:
+async def attach_intent(
+    request: IntentRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user)
+):
+    """Attach a purpose/intent to a thing.
+    
+    Only works for things owned by the authenticated user.
+    """
+    user_id = get_user_id(current_user)
+    
+    with GraphService(user_id=user_id) as gs:
         result = gs.attach_intent(
             request.thing_name,
             request.intent,
@@ -145,5 +204,5 @@ async def attach_intent(request: IntentRequest):
 
 @router.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint (no auth required)."""
     return {"status": "healthy", "service": "spatial-memory-api"}

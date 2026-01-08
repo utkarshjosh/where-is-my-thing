@@ -1,5 +1,6 @@
 from models.entities import Thing, Place, Intent, Event, PlaceType
 from models.graph_schema import NodeLabel, RelationType
+from models.user import User
 
 __all__ = [
     "Thing",
@@ -9,4 +10,6 @@ __all__ = [
     "PlaceType",
     "NodeLabel",
     "RelationType",
+    "User",
 ]
+

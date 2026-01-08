@@ -40,15 +40,22 @@ docker run -d --name neo4j \
 adk web
 ```
 
-Then open http://localhost:8000 and select `spatial_memory_agent`.
+Then open http://localhost:5000 and select `spatial_memory_agent`.
 
 ### 5. Run the API Server
 
 ```bash
-uvicorn src.api.main:app --reload
+uvicorn src.api.main:app --reload --port 5000
 ```
 
-API docs at http://localhost:8000/docs
+API docs at http://localhost:5000/docs
+
+### 6. Run the Mobile App
+
+```bash
+cd mobile-app
+bunx expo start
+```
 
 ## Core Concepts
 

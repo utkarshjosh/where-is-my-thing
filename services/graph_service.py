@@ -15,10 +15,21 @@ from config import get_settings
 
 
 class GraphService:
-    """Neo4j wrapper with cognitive operations for spatial memory."""
+    """Neo4j wrapper with cognitive operations for spatial memory.
     
-    def __init__(self, driver: Optional[Driver] = None):
-        """Initialize with optional driver, or create from settings."""
+    All operations are scoped to a specific user via the user_id parameter.
+    This ensures per-user data isolation - users can only access their own things.
+    """
+    
+    def __init__(self, user_id: Optional[str] = None, driver: Optional[Driver] = None):
+        """Initialize with user_id for data isolation and optional driver.
+        
+        Args:
+            user_id: The internal User ID for data isolation. Required for 
+                    most operations. If None, operations will fail on user-scoped data.
+            driver: Optional Neo4j driver. If not provided, creates from settings.
+        """
+        self.user_id = user_id
         if driver:
             self._driver = driver
         else:
@@ -236,6 +247,18 @@ class GraphService:
                 to_place_id=event.to_place_id,
                 thing_id=thing.id
             )
+            
+            # Create OWNS relationship for user-level access control
+            if self.user_id:
+                session.run(
+                    """
+                    MATCH (u:User {id: $user_id})
+                    MATCH (t:Thing {id: $thing_id})
+                    MERGE (u)-[:OWNS]->(t)
+                    """,
+                    user_id=self.user_id,
+                    thing_id=thing.id
+                )
         
         location_path = self.get_location_path(thing.id)
         
@@ -263,17 +286,33 @@ class GraphService:
         }
     
     def find_thing_by_name(self, name: str) -> Optional[dict]:
-        """Find a thing by exact or fuzzy name match."""
+        """Find a thing by exact or fuzzy name match.
+        
+        If user_id is set, only returns things owned by that user.
+        """
         with self._driver.session() as session:
-            # Try exact match first
-            result = session.run(
-                """
-                MATCH (t:Thing)
-                WHERE toLower(t.name) = toLower($name)
-                RETURN t
-                """,
-                name=name.strip()
-            )
+            # Build query based on whether user filtering is needed
+            if self.user_id:
+                # User-scoped query
+                result = session.run(
+                    """
+                    MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
+                    WHERE toLower(t.name) = toLower($name)
+                    RETURN t
+                    """,
+                    user_id=self.user_id,
+                    name=name.strip()
+                )
+            else:
+                # Global query (for backwards compatibility)
+                result = session.run(
+                    """
+                    MATCH (t:Thing)
+                    WHERE toLower(t.name) = toLower($name)
+                    RETURN t
+                    """,
+                    name=name.strip()
+                )
             record = result.single()
             
             if record:
@@ -286,15 +325,27 @@ class GraphService:
                 }
             
             # Try fuzzy match
-            result = session.run(
-                """
-                MATCH (t:Thing)
-                WHERE toLower(t.name) CONTAINS toLower($name)
-                RETURN t
-                LIMIT 1
-                """,
-                name=name.strip()
-            )
+            if self.user_id:
+                result = session.run(
+                    """
+                    MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
+                    WHERE toLower(t.name) CONTAINS toLower($name)
+                    RETURN t
+                    LIMIT 1
+                    """,
+                    user_id=self.user_id,
+                    name=name.strip()
+                )
+            else:
+                result = session.run(
+                    """
+                    MATCH (t:Thing)
+                    WHERE toLower(t.name) CONTAINS toLower($name)
+                    RETURN t
+                    LIMIT 1
+                    """,
+                    name=name.strip()
+                )
             record = result.single()
             
             if record:
@@ -309,21 +360,41 @@ class GraphService:
             return None
     
     def find_thing(self, search_query: str) -> dict:
-        """Find things matching a query (name, description, or tags)."""
+        """Find things matching a query (name, description, or tags).
+        
+        If user_id is set, only returns things owned by that user.
+        """
         with self._driver.session() as session:
-            result = session.run(
-                """
-                MATCH (t:Thing)
-                WHERE toLower(t.name) CONTAINS toLower($search_term)
-                   OR toLower(t.description) CONTAINS toLower($search_term)
-                   OR ANY(tag IN t.tags WHERE toLower(tag) CONTAINS toLower($search_term))
-                WITH t
-                OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place)
-                RETURN t, p
-                LIMIT 10
-                """,
-                search_term=search_query.strip()
-            )
+            if self.user_id:
+                # User-scoped query
+                result = session.run(
+                    """
+                    MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
+                    WHERE toLower(t.name) CONTAINS toLower($search_term)
+                       OR toLower(t.description) CONTAINS toLower($search_term)
+                       OR ANY(tag IN t.tags WHERE toLower(tag) CONTAINS toLower($search_term))
+                    WITH t
+                    OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place)
+                    RETURN t, p
+                    LIMIT 10
+                    """,
+                    user_id=self.user_id,
+                    search_term=search_query.strip()
+                )
+            else:
+                result = session.run(
+                    """
+                    MATCH (t:Thing)
+                    WHERE toLower(t.name) CONTAINS toLower($search_term)
+                       OR toLower(t.description) CONTAINS toLower($search_term)
+                       OR ANY(tag IN t.tags WHERE toLower(tag) CONTAINS toLower($search_term))
+                    WITH t
+                    OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place)
+                    RETURN t, p
+                    LIMIT 10
+                    """,
+                    search_term=search_query.strip()
+                )
             
             things = []
             for record in result:

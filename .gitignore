@@ -28,3 +28,6 @@ mobile-app/.metro-health-check*
 .idea/
 *.swp
 *.swo
+
+# Debug audio files
+debug_audio/
