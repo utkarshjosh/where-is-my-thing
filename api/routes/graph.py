@@ -230,11 +230,15 @@ async def get_graph(
                 user_id=user_id
             )
             for record in located_result:
-                edges.append(GraphEdge(
-                    source=record["source"],
-                    target=record["target"],
-                    type=record["rel_type"],
-                ))
+                source = record.get("source")
+                target = record.get("target")
+                rel_type = record.get("rel_type")
+                if source and target and rel_type:
+                    edges.append(GraphEdge(
+                        source=source,
+                        target=target,
+                        type=rel_type,
+                    ))
             
             # CONTAINS edges (place hierarchy) - only if we have places
             if any(n.type == "place" for n in nodes):
@@ -249,45 +253,55 @@ async def get_graph(
                     place_ids=[nid for nid in seen_nodes]
                 )
                 for record in contains_result:
-                    edges.append(GraphEdge(
-                        source=record["source"],
-                        target=record["target"],
-                        type=record["rel_type"],
-                    ))
+                    source = record.get("source")
+                    target = record.get("target")
+                    rel_type = record.get("rel_type")
+                    if source and target and rel_type:
+                        edges.append(GraphEdge(
+                            source=source,
+                            target=target,
+                            type=rel_type,
+                        ))
             
             # RELATED_TO edges (thing associations) - only if we have things
             related_result = session.run(
                 """
                 MATCH (u:User {id: $user_id})-[:OWNS]->(t1:Thing)
-                OPTIONAL MATCH (t1)-[r:RELATED_TO]->(t2:Thing)<-[:OWNS]-(u)
-                WHERE r IS NOT NULL
+                MATCH (t1)-[r:RELATED_TO]->(t2:Thing)<-[:OWNS]-(u)
                 RETURN t1.id AS source, t2.id AS target, type(r) AS rel_type
                 """,
                 user_id=user_id
             )
             for record in related_result:
-                edges.append(GraphEdge(
-                    source=record["source"],
-                    target=record["target"],
-                    type=record["rel_type"],
-                ))
+                source = record.get("source")
+                target = record.get("target")
+                rel_type = record.get("rel_type")
+                if source and target and rel_type:
+                    edges.append(GraphEdge(
+                        source=source,
+                        target=target,
+                        type=rel_type,
+                    ))
             
             # USED_FOR edges (thing to intent) - only if we have things
             used_for_result = session.run(
                 """
                 MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
-                OPTIONAL MATCH (t)-[r:USED_FOR]->(i:Intent)
-                WHERE r IS NOT NULL
+                MATCH (t)-[r:USED_FOR]->(i:Intent)
                 RETURN t.id AS source, i.id AS target, type(r) AS rel_type
                 """,
                 user_id=user_id
             )
             for record in used_for_result:
-                edges.append(GraphEdge(
-                    source=record["source"],
-                    target=record["target"],
-                    type=record["rel_type"],
-                ))
+                source = record.get("source")
+                target = record.get("target")
+                rel_type = record.get("rel_type")
+                if source and target and rel_type:
+                    edges.append(GraphEdge(
+                        source=source,
+                        target=target,
+                        type=rel_type,
+                    ))
     
     return GraphData(nodes=nodes, edges=edges)
 

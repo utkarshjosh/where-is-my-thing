@@ -533,40 +533,48 @@ async def process_agent_turn(
         # Run the agent (non-streaming for now)
         response_text = ""
         
-        async for event in runner.run_async(
-            user_id=user_id,
-            session_id=session_id,
-            new_message=content
-        ):
-            # Check if cancelled
-            if is_cancelled and is_cancelled():
-                logger.info("Agent turn cancelled due to user interrupt")
-                return
-            
-            # Handle tool calls
-            if hasattr(event, "actions") and event.actions:
-                for action in event.actions:
-                    if hasattr(action, "tool_call") and action.tool_call:
+        # Set user context for tools
+        from spatial_memory_agent.context import user_id_ctx
+        token = user_id_ctx.set(user_id)
+        
+        try:
+            async for event in runner.run_async(
+                user_id=user_id,
+                session_id=session_id,
+                new_message=content
+            ):
+                # Check if cancelled
+                if is_cancelled and is_cancelled():
+                    logger.info("Agent turn cancelled due to user interrupt")
+                    return
+                
+                # Handle tool calls
+                if hasattr(event, "actions") and event.actions:
+                    for action in event.actions:
+                        if hasattr(action, "tool_call") and action.tool_call:
+                            await websocket.send_json({
+                                "type": "tool_call",
+                                "name": action.tool_call.name,
+                                "args": dict(action.tool_call.args) if action.tool_call.args else {}
+                            })
+                
+                # Handle tool results
+                if hasattr(event, "tool_results") and event.tool_results:
+                    for result in event.tool_results:
                         await websocket.send_json({
-                            "type": "tool_call",
-                            "name": action.tool_call.name,
-                            "args": dict(action.tool_call.args) if action.tool_call.args else {}
+                            "type": "tool_result",
+                            "name": result.name if hasattr(result, "name") else "unknown",
+                            "result": result.result if hasattr(result, "result") else str(result)
                         })
-            
-            # Handle tool results
-            if hasattr(event, "tool_results") and event.tool_results:
-                for result in event.tool_results:
-                    await websocket.send_json({
-                        "type": "tool_result",
-                        "name": result.name if hasattr(result, "name") else "unknown",
-                        "result": result.result if hasattr(result, "result") else str(result)
-                    })
-            
-            # Accumulate response text
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if part.text:
-                        response_text += part.text
+                
+                # Accumulate response text
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if part.text:
+                            response_text += part.text
+        finally:
+            # Reset context
+            user_id_ctx.reset(token)
         
         # Check if cancelled before TTS
         if is_cancelled and is_cancelled():

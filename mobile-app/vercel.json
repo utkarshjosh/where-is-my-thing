@@ -1,0 +1,21 @@
+{
+    "version": 2,
+    "rewrites": [
+        {
+            "source": "/api/(.*)",
+            "destination": "https://your-api-url.com/$1"
+        }
+    ],
+    "redirects": [
+        {
+            "source": "/(.*)",
+            "has": [
+                {
+                    "type": "host",
+                    "value": "your-web-url.com"
+                }
+            ],
+            "destination": "https://your-web-url.com/$1"
+        }
+    ]
+}

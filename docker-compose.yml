@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    depends_on:
+      - neo4j
+    networks:
+      - spatial-network
+
+  neo4j:
+    image: neo4j:latest
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    environment:
+      - NEO4J_AUTH=${NEO4J_USERNAME}/${NEO4J_PASSWORD}
+    networks:
+      - spatial-network
+
+networks:
+  spatial-network:
+    driver: bridge
+
+volumes:
+  neo4j_data:
+  neo4j_logs:

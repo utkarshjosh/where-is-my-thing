@@ -132,7 +132,7 @@ export default function LoginScreen() {
                         entering={FadeInDown.delay(100).duration(600)}
                         style={styles.logoContainer}
                     >
-                        <VoiceOrb size={100} state="idle" type="ring" />
+                        <VoiceOrb size={100} state="idle" type="css-ring" />
                         <Text style={styles.appName}>Spatial Memory</Text>
                         <Text style={styles.tagline}>Remember everything, everywhere</Text>
                     </Animated.View>

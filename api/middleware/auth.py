@@ -22,25 +22,6 @@ class AuthenticatedUser(BaseModel):
 # Security scheme for Bearer token
 security = HTTPBearer(auto_error=False)
 
-# Cache for JWKS client
-_jwks_client: Optional[PyJWKClient] = None
-
-
-def get_jwks_client() -> PyJWKClient:
-    """Get or create JWKS client for Clerk."""
-    global _jwks_client
-    if _jwks_client is None:
-        settings = get_settings()
-        # Extract instance ID from the secret key for JWKS URL
-        # Clerk secret keys are in format: sk_test_XXXX or sk_live_XXXX
-        # We need to get the JWKS from the Clerk Frontend API
-        # The JWKS URL format is: https://{publishable_key_prefix}.clerk.accounts.dev/.well-known/jwks.json
-        # Or we can use the API: https://api.clerk.dev/v1/jwks
-        
-        # For simplicity, we'll verify using the secret key directly
-        # In production, use JWKS for key rotation support
-        _jwks_client = settings.clerk_secret_key
-    return _jwks_client
 
 
 async def get_current_user(

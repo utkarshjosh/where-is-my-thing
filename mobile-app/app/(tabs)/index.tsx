@@ -147,28 +147,8 @@ export default function HomeScreen() {
       </View>
 
       <View style={styles.content}>
-        {/* Glass Orb - The Brain - Made Important */}
-        <View style={styles.orbContainer}>
-          <VoiceOrb
-            state={orbState}
-            type="ring"
-            size={Dimensions.get('window').width * 0.65}
-            onPressIn={handleVoicePressIn}
-            onPressOut={handleVoicePressOut}
-          />
-          <Text style={styles.statusText}>
-            {orbState === 'idle' && 'Hold'}
-            {orbState === 'listening' && 'Listening...'}
-            {orbState === 'thinking' && 'Thinking...'}
-            {orbState === 'speaking' && 'Speaking...'}
-          </Text>
-          {voiceState === 'connecting' && (
-            <ActivityIndicator size="small" color={theme.colors.primary.base} style={styles.loader} />
-          )}
-        </View>
-
-        {/* Transcript Area - Fading text, no bubbles */}
-        <View style={[styles.transcriptArea, { bottom: 140 + insets.bottom }]}>
+        {/* Transcript Area - At the top */}
+        <View style={styles.transcriptArea}>
           {visibleMessages.length > 0 ? (
             <View style={styles.transcriptContainer}>
               {/* Top Fade - Stronger */}
@@ -218,8 +198,28 @@ export default function HomeScreen() {
           )}
         </View>
 
-        {/* Quick Actions - Overlay at bottom, smaller */}
-        <View style={[styles.quickActions, { bottom: 20 }]}>
+        {/* Glass Orb - The Brain - In the middle */}
+        <View style={styles.orbContainer}>
+          <VoiceOrb
+            state={orbState}
+            type="ring"
+            size={Dimensions.get('window').width * 0.65}
+            onPressIn={handleVoicePressIn}
+            onPressOut={handleVoicePressOut}
+          />
+          <Text style={styles.statusText}>
+            {orbState === 'idle' && 'Hold'}
+            {orbState === 'listening' && 'Listening...'}
+            {orbState === 'thinking' && 'Thinking...'}
+            {orbState === 'speaking' && 'Speaking...'}
+          </Text>
+          {voiceState === 'connecting' && (
+            <ActivityIndicator size="small" color={theme.colors.primary.base} style={styles.loader} />
+          )}
+        </View>
+
+        {/* Quick Actions - At the bottom */}
+        <View style={[styles.quickActions, { bottom: 20 + insets.bottom }]}>
           <QuickActionPill
             label="remember"
             icon="bookmark-outline"
@@ -282,15 +282,22 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     alignItems: 'center',
-    justifyContent: 'flex-start',
+    justifyContent: 'space-between',
     paddingBottom: theme.spacing.md,
     overflow: 'visible',
   },
+  transcriptArea: {
+    width: '100%',
+    height: height * 0.25, // Fixed height for transcript area at top
+    paddingHorizontal: theme.spacing.md,
+    paddingTop: theme.spacing.sm,
+    justifyContent: 'flex-start',
+  },
   orbContainer: {
     alignItems: 'center',
-    marginTop: theme.spacing.sm,
     justifyContent: 'center',
-    minHeight: height * 0.45, // Reduced space to bring orb up
+    flex: 1,
+    minHeight: height * 0.35, // Middle section for orb
   },
   statusText: {
     color: theme.colors.text.secondary,
@@ -301,15 +308,6 @@ const styles = StyleSheet.create({
   },
   loader: {
     marginTop: theme.spacing.sm,
-  },
-  transcriptArea: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: height * 0.22, // Increased height for better visibility
-    paddingHorizontal: theme.spacing.md,
-    justifyContent: 'flex-end',
-    pointerEvents: 'box-none', // Allow touches to pass through
   },
   transcriptContainer: {
     flex: 1,

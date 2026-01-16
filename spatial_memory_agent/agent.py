@@ -29,8 +29,10 @@ os.environ["LITELLM_RATE_LIMIT"] = f"{settings.llm_model}:5400:864000"  # 5400/m
 
 # Initialize graph service (connection managed per-call)
 def _get_graph_service() -> GraphService:
-    """Get a graph service instance."""
-    return GraphService()
+    """Get a graph service instance with the current user ID from context."""
+    from spatial_memory_agent.context import user_id_ctx
+    user_id = user_id_ctx.get()
+    return GraphService(user_id=user_id)
 
 
 # ========== Agent Tools ==========

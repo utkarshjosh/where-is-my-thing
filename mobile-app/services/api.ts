@@ -7,6 +7,7 @@
 import { useAuth } from '@clerk/clerk-expo';
 import Constants from 'expo-constants';
 import { useMemo } from 'react';
+import { Platform } from 'react-native';
 
 // Types
 export interface Item {
@@ -66,6 +67,12 @@ const getApiBaseUrl = (): string => {
 
     // Production URL
     const baseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
+
+    // On web, if no base URL is provided, we can assume the API is proxied or on the same domain
+    if (Platform.OS === 'web' && !baseUrl) {
+        return window.location.origin;
+    }
+
     if (!baseUrl) {
         throw new Error('EXPO_PUBLIC_API_BASE_URL not configured');
     }

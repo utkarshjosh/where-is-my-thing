@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import {
     View,
     Text,
@@ -9,6 +9,7 @@ import {
     RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import theme, { CategoryKey } from '@/constants/theme';
@@ -16,10 +17,37 @@ import { FilterBar } from '@/components/items/FilterBar';
 import { ItemCard } from '@/components/items/ItemCard';
 import { useItems } from '@/hooks/useItems';
 
+// Delay before refetching when page comes into focus (in milliseconds)
+const REFETCH_DELAY = 1000; // 1 second delay
+
 export default function ItemsScreen() {
-    const { items, isLoading, error, searchQuery, search, refresh } = useItems();
+    const { items, isLoading, error, searchQuery, search, refresh, fetchItems } = useItems({ autoFetch: false });
     const [selectedCategory, setSelectedCategory] = useState<CategoryKey | 'all'>('all');
     const [refreshing, setRefreshing] = useState(false);
+    const refetchTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+    // Lazy refetch when page comes into focus with delay
+    useFocusEffect(
+        React.useCallback(() => {
+            // Clear any existing timer
+            if (refetchTimerRef.current) {
+                clearTimeout(refetchTimerRef.current);
+            }
+
+            // Schedule refetch after delay
+            refetchTimerRef.current = setTimeout(() => {
+                fetchItems();
+            }, REFETCH_DELAY);
+
+            // Cleanup timer on unmount or when leaving focus
+            return () => {
+                if (refetchTimerRef.current) {
+                    clearTimeout(refetchTimerRef.current);
+                    refetchTimerRef.current = null;
+                }
+            };
+        }, [fetchItems])
+    );
 
     // Handle pull-to-refresh
     const onRefresh = async () => {

@@ -9,6 +9,7 @@ import {
     ActivityIndicator,
     RefreshControl,
     ScrollView,
+    Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
@@ -27,6 +28,9 @@ import { GraphNode, GraphEdge } from '@/services/api';
 
 const { width, height } = Dimensions.get('window');
 const GRAPH_SIZE = width - theme.spacing.md * 2;
+
+// Delay before refetching when page comes into focus (in milliseconds)
+const REFETCH_DELAY = 1000; // 1 second delay
 
 // Helper to compute node positions using force-directed layout simulation
 function computeNodePositions(nodes: GraphNode[], edges: GraphEdge[]): Map<string, { x: number; y: number }> {
@@ -100,32 +104,52 @@ export default function GraphScreen() {
     const [selectedNode, setSelectedNode] = useState<string | null>(null);
     const [scale, setScale] = useState(1);
     const [refreshing, setRefreshing] = useState(false);
+    const refetchTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-    // Lazy refetch when page comes into focus
+    // Lazy refetch when page comes into focus with delay
     useFocusEffect(
         React.useCallback(() => {
-            // Fetch graph data when screen comes into focus (lazy refetch)
-            // This will use cached data if available and valid, or fetch if needed
-            fetchGraph();
+            // Clear any existing timer
+            if (refetchTimerRef.current) {
+                clearTimeout(refetchTimerRef.current);
+            }
+
+            // Schedule refetch after delay
+            refetchTimerRef.current = setTimeout(() => {
+                // Fetch graph data when screen comes into focus (lazy refetch)
+                // This will use cached data if available and valid, or fetch if needed
+                fetchGraph();
+            }, REFETCH_DELAY);
+
+            // Cleanup timer on unmount or when leaving focus
+            return () => {
+                if (refetchTimerRef.current) {
+                    clearTimeout(refetchTimerRef.current);
+                    refetchTimerRef.current = null;
+                }
+            };
         }, [fetchGraph])
     );
 
     const translateX = useSharedValue(0);
     const translateY = useSharedValue(0);
 
+    // PanResponder only works on native platforms, not on web
     const panResponder = useRef(
-        PanResponder.create({
-            onStartShouldSetPanResponder: () => true,
-            onMoveShouldSetPanResponder: () => true,
-            onPanResponderMove: (_, gestureState) => {
-                translateX.value = gestureState.dx;
-                translateY.value = gestureState.dy;
-            },
-            onPanResponderRelease: () => {
-                translateX.value = withSpring(0);
-                translateY.value = withSpring(0);
-            },
-        })
+        Platform.OS !== 'web'
+            ? PanResponder.create({
+                  onStartShouldSetPanResponder: () => true,
+                  onMoveShouldSetPanResponder: () => true,
+                  onPanResponderMove: (_, gestureState) => {
+                      translateX.value = gestureState.dx;
+                      translateY.value = gestureState.dy;
+                  },
+                  onPanResponderRelease: () => {
+                      translateX.value = withSpring(0);
+                      translateY.value = withSpring(0);
+                  },
+              })
+            : null
     ).current;
 
     const graphStyle = useAnimatedStyle(() => ({
@@ -225,7 +249,7 @@ export default function GraphScreen() {
                             </View>
                         ) : (
                             <Animated.View
-                                {...panResponder.panHandlers}
+                                {...(panResponder?.panHandlers || {})}
                                 style={[styles.graph, graphStyle]}
                             >
                                 <Svg width={GRAPH_SIZE} height={GRAPH_SIZE}>

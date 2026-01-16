@@ -73,23 +73,32 @@ async def root():
         "version": "0.1.0",
         "description": "A personal knowledge graph for tracking where you keep things",
         "docs": "/docs",
-        "endpoints": [
-            "POST /thing/remember",
-            "POST /thing/find",
-            "POST /thing/move",
-            "POST /thing/associate",
-            "POST /place/contents",
-            "POST /intent/attach",
-            "POST /query/smart",
-            "POST /query/similar/{thing_id}",
-            "GET /query/explain",
-            "GET /items",
-            "GET /items/search",
-            "GET /items/{id}",
-            "GET /graph",
-            "GET /graph/nodes",
-            "GET /graph/edges",
-            "WS /agent/voice",
-        ]
+    }
+
+
+@app.get("/health")
+async def health():
+    """Simplified health check for deployment monitors."""
+    return {"status": "healthy"}
+
+
+@app.get("/health/details")
+async def health_details():
+    """Detailed health check including dependencies."""
+    from services.graph_service import GraphService
+    neo4j_ok = False
+    try:
+        with GraphService() as gs:
+            # Simple query to check connection
+            with gs._driver.session() as session:
+                session.run("RETURN 1")
+                neo4j_ok = True
+    except Exception as e:
+        print(f"Health check failed for Neo4j: {e}")
+
+    return {
+        "status": "healthy" if neo4j_ok else "degraded",
+        "neo4j": "connected" if neo4j_ok else "disconnected",
+        "version": "0.1.0"
     }
 
