@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { api, SystemHealth, DataStats, MetricsSummary, RateLimitStats, CacheStats, RequestLog } from './api';
+import { api, type SystemHealth, type DataStats, type MetricsSummary, type RateLimitStats, type CacheStats, type RequestLog } from './api';
 import './App.css';
 
 function formatUptime(seconds: number): string {
@@ -271,9 +271,9 @@ export default function App() {
                   </td>
                   <td className="py-2">
                     <span className={`px-2 py-1 rounded text-xs font-medium ${log.method === 'GET' ? 'bg-blue-500/20 text-blue-400' :
-                        log.method === 'POST' ? 'bg-green-500/20 text-green-400' :
-                          log.method === 'DELETE' ? 'bg-red-500/20 text-red-400' :
-                            'bg-gray-500/20 text-gray-400'
+                      log.method === 'POST' ? 'bg-green-500/20 text-green-400' :
+                        log.method === 'DELETE' ? 'bg-red-500/20 text-red-400' :
+                          'bg-gray-500/20 text-gray-400'
                       }`}>
                       {log.method}
                     </span>
