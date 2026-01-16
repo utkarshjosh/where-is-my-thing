@@ -16,19 +16,19 @@ class UserService:
     """
     
     def __init__(self, driver: Optional[Driver] = None):
-        """Initialize with optional driver, or create from settings."""
+        """Initialize with optional driver, or use shared pool."""
         if driver:
             self._driver = driver
+            self._owns_driver = False
         else:
-            settings = get_settings()
-            self._driver = GraphDatabase.driver(
-                settings.neo4j_uri,
-                auth=(settings.neo4j_username, settings.neo4j_password)
-            )
+            from services.db_pool import get_neo4j_driver
+            self._driver = get_neo4j_driver()
+            self._owns_driver = False
     
     def close(self):
-        """Close the driver connection."""
-        self._driver.close()
+        """Close the driver connection if we own it."""
+        if hasattr(self, '_owns_driver') and self._owns_driver:
+            self._driver.close()
     
     def __enter__(self):
         return self

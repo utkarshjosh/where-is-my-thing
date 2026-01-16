@@ -7,20 +7,20 @@ import Constants from 'expo-constants';
 export const generateAPIUrl = (relativePath: string): string => {
     const path = relativePath.startsWith('/') ? relativePath : `/${relativePath}`;
 
+    // Priority 1: Environment variable
+    const envBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
+    if (envBaseUrl) {
+        const baseUrl = envBaseUrl.endsWith('/') ? envBaseUrl.slice(0, -1) : envBaseUrl;
+        return baseUrl.concat(path);
+    }
+
     if (process.env.NODE_ENV === 'development') {
         // In development, use the Expo dev server URL
         const origin = Constants.experienceUrl?.replace('exp://', 'http://') || 'http://localhost:8081';
         return origin.concat(path);
     }
 
-    // In production, use the configured API base URL
-    if (!process.env.EXPO_PUBLIC_API_BASE_URL) {
-        throw new Error(
-            'EXPO_PUBLIC_API_BASE_URL environment variable is not defined'
-        );
-    }
-
-    return process.env.EXPO_PUBLIC_API_BASE_URL.concat(path);
+    throw new Error('EXPO_PUBLIC_API_BASE_URL environment variable is not defined');
 };
 
 /**

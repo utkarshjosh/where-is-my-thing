@@ -85,6 +85,17 @@ export default function LoginScreen() {
 
         setIsGoogleLoading(true);
         try {
+            if (Platform.OS === 'web') {
+                // On web, use redirect flow instead of popup for a better experience
+                await signIn.authenticateWithRedirect({
+                    strategy: 'oauth_google',
+                    redirectUrl: '/(auth)/login', // Redirect back here to handle the callback
+                    redirectUrlComplete: '/(tabs)',
+                });
+                return;
+            }
+
+            // Mobile flow uses startSSOFlow with WebBrowser
             const { createdSessionId, setActive: setActiveSession } = await startSSOFlow({
                 strategy: 'oauth_google',
                 redirectUrl: Linking.createURL('/(tabs)', { scheme: 'mobileapp' }),
@@ -102,11 +113,17 @@ export default function LoginScreen() {
             }
             console.error('Google sign-in error:', JSON.stringify(err, null, 2));
             const errorMessage = err.errors?.[0]?.message || err.message || 'Google sign-in failed. Please try again.';
-            Alert.alert('Google Sign-in Failed', errorMessage);
+
+            if (Platform.OS === 'web') {
+                // Alert is annoying on web
+                console.error(errorMessage);
+            } else {
+                Alert.alert('Google Sign-in Failed', errorMessage);
+            }
         } finally {
             setIsGoogleLoading(false);
         }
-    }, [isLoaded, startSSOFlow]);
+    }, [isLoaded, signIn, startSSOFlow]);
 
     return (
         <SafeAreaView style={styles.container}>

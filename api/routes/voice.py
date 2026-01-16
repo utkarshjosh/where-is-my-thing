@@ -59,16 +59,26 @@ async def verify_websocket_token(token: str) -> Optional[dict]:
     """Verify Clerk JWT token for WebSocket connections.
     
     Returns user claims if valid, None otherwise.
+    Uses cached JWKS client to avoid network call on every connection.
     """
     try:
         # Decode without verification first to get issuer
         unverified = jwt.decode(token, options={"verify_signature": False})
         issuer = unverified.get("iss", "")
         
-        # Get JWKS from Clerk
-        from jwt import PyJWKClient
-        jwks_url = f"{issuer}/.well-known/jwks.json"
-        jwks_client = PyJWKClient(jwks_url)
+        # Get cached JWKS client
+        from services.cache_service import get_jwks_cache
+        jwks_cache = get_jwks_cache()
+        
+        cache_key = f"jwks:{issuer}"
+        jwks_client = jwks_cache.get(cache_key)
+        
+        if jwks_client is None:
+            from jwt import PyJWKClient
+            jwks_url = f"{issuer}/.well-known/jwks.json"
+            jwks_client = PyJWKClient(jwks_url)
+            jwks_cache.set(cache_key, jwks_client)
+        
         signing_key = jwks_client.get_signing_key_from_jwt(token)
         
         # Verify and decode

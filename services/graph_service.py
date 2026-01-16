@@ -27,21 +27,23 @@ class GraphService:
         Args:
             user_id: The internal User ID for data isolation. Required for 
                     most operations. If None, operations will fail on user-scoped data.
-            driver: Optional Neo4j driver. If not provided, creates from settings.
+            driver: Optional Neo4j driver. If not provided, uses shared pool.
         """
         self.user_id = user_id
         if driver:
             self._driver = driver
+            self._owns_driver = False  # Don't close shared drivers
         else:
-            settings = get_settings()
-            self._driver = GraphDatabase.driver(
-                settings.neo4j_uri,
-                auth=(settings.neo4j_username, settings.neo4j_password)
-            )
+            # Use shared driver pool for better performance
+            from services.db_pool import get_neo4j_driver
+            self._driver = get_neo4j_driver()
+            self._owns_driver = False  # Shared pool manages lifecycle
     
     def close(self):
-        """Close the driver connection."""
-        self._driver.close()
+        """Close the driver connection if we own it."""
+        # Only close if we created this driver (not from pool)
+        if hasattr(self, '_owns_driver') and self._owns_driver:
+            self._driver.close()
     
     def __enter__(self):
         return self

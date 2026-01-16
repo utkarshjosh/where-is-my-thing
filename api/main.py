@@ -13,6 +13,7 @@ from api.routes.users import router as users_router
 from api.routes.items import router as items_router
 from api.routes.graph import router as graph_router
 from api.routes.voice import router as voice_router
+from api.routes.admin import router as admin_router
 
 # Configure logging
 logging.basicConfig(
@@ -30,6 +31,15 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
     print("🧠 Spatial Memory API shutting down...")
+    
+    # Cleanup Neo4j pool
+    from services.db_pool import close_neo4j_pool
+    try:
+        await close_neo4j_pool()
+        print("✅ Neo4j pool cleaned up")
+    except Exception as e:
+        print(f"⚠️  Error cleaning up Neo4j pool: {e}")
+    
     # Cleanup Groq service HTTP client
     from services.groq_service import get_groq_service
     try:
@@ -56,6 +66,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Request timing middleware for metrics
+from api.middleware.metrics import RequestTimingMiddleware
+app.add_middleware(RequestTimingMiddleware)
+
+# Include routes
+from fastapi.staticfiles import StaticFiles
+import os
+
 # Include routes
 app.include_router(router)
 app.include_router(queries_router)
@@ -63,6 +81,12 @@ app.include_router(users_router)
 app.include_router(items_router)
 app.include_router(graph_router)
 app.include_router(voice_router)
+app.include_router(admin_router)
+
+# Mount Admin UI static files
+# Check if directory exists (e.g. in Docker)
+if os.path.exists("/app/static/admin"):
+    app.mount("/admin", StaticFiles(directory="/app/static/admin", html=True), name="admin")
 
 
 @app.get("/")

@@ -54,18 +54,20 @@ function FallbackOrb({ size }: { size: number }) {
 }
 
 // Main VoiceOrb component
-export function VoiceOrb({ 
-    state = 'idle', 
-    size, 
-    type, 
-    onPressIn, 
-    onPressOut 
-}: VoiceOrbProps & { 
+export function VoiceOrb({
+    state = 'idle',
+    size,
+    type,
+    onPressIn,
+    onPressOut
+}: VoiceOrbProps & {
     onPressIn?: () => void;
     onPressOut?: () => void;
 }) {
     const { width: screenWidth } = useWindowDimensions();
-    const orbSize = size || screenWidth * 0.55;
+    // For web, we usually want the orb size relative to the content area, not the full screen
+    const effectiveWidth = Platform.OS === 'web' ? Math.min(screenWidth, 500) : screenWidth;
+    const orbSize = size || effectiveWidth * 0.65;
     const { orbType: preferredType } = useOrbPreference();
 
     // Determine which orb to use
@@ -98,8 +100,8 @@ export function VoiceOrb({
 
     if (onPressIn || onPressOut) {
         return (
-            <TouchableOpacity 
-                onPressIn={onPressIn} 
+            <TouchableOpacity
+                onPressIn={onPressIn}
                 onPressOut={onPressOut}
                 activeOpacity={0.9}
             >

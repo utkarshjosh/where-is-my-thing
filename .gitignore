@@ -14,12 +14,18 @@ build/
 mobile-app/node_modules/
 mobile-app/.expo/
 mobile-app/dist/
+mobile-app/dist.zip
 mobile-app/web-build/
 mobile-app/.kotlin/
 mobile-app/ios/
 mobile-app/android/
 mobile-app/*.tsbuildinfo
 mobile-app/.metro-health-check*
+
+# Admin UI
+admin-ui/node_modules/
+admin-ui/dist/
+admin-ui/.env
 
 # macOS
 .DS_Store

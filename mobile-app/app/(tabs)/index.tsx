@@ -7,6 +7,8 @@ import {
   TouchableOpacity,
   Dimensions,
   ActivityIndicator,
+  useWindowDimensions,
+  Platform,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -19,12 +21,14 @@ import { ChatBubble } from '@/components/home/ChatBubble';
 import { GlassContainer } from '@/components/ui/GlassContainer';
 import { useVoiceAgent, VoiceState, Transcript } from '@/hooks/useVoiceAgent';
 
-const { height } = Dimensions.get('window');
+// Initial height check
+const { height: initialHeight } = Dimensions.get('window');
 
 type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
 export default function HomeScreen() {
   const scrollViewRef = useRef<ScrollView>(null);
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const previousTranscriptLengthRef = useRef<number>(0);
   const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -93,31 +97,31 @@ export default function HomeScreen() {
       const latestTranscript = transcripts[transcripts.length - 1];
       const currentTextLength = latestTranscript?.text?.length || 0;
       const previousTextLength = previousTranscriptLengthRef.current;
-      
+
       // Only auto-scroll if text length increased (new or updated message)
       if (currentTextLength > previousTextLength && latestTranscript?.text) {
         // Clear any existing scroll timeout
         if (scrollTimeoutRef.current) {
           clearTimeout(scrollTimeoutRef.current);
         }
-        
+
         // Calculate reading time: ~2 words per second = 500ms per word
         const words = latestTranscript.text.split(/\s+/).length;
         const readingTimeMs = Math.min((words / 2) * 1000, 5000); // 2 words/sec, max 5 seconds
-        
+
         // Start from top of the new message
         scrollViewRef.current?.scrollTo({ y: 0, animated: false });
-        
+
         // Scroll to end smoothly over reading time
         scrollTimeoutRef.current = setTimeout(() => {
           scrollViewRef.current?.scrollToEnd({ animated: true });
         }, readingTimeMs);
       }
-      
+
       // Update ref for next comparison
       previousTranscriptLengthRef.current = currentTextLength;
     }
-    
+
     return () => {
       if (scrollTimeoutRef.current) {
         clearTimeout(scrollTimeoutRef.current);
@@ -148,7 +152,7 @@ export default function HomeScreen() {
 
       <View style={styles.content}>
         {/* Transcript Area - At the top */}
-        <View style={styles.transcriptArea}>
+        <View style={[styles.transcriptArea, { height: windowHeight * 0.25 }]}>
           {visibleMessages.length > 0 ? (
             <View style={styles.transcriptContainer}>
               {/* Top Fade - Stronger */}
@@ -199,11 +203,11 @@ export default function HomeScreen() {
         </View>
 
         {/* Glass Orb - The Brain - In the middle */}
-        <View style={styles.orbContainer}>
+        <View style={[styles.orbContainer, { minHeight: windowHeight * 0.35 }]}>
           <VoiceOrb
             state={orbState}
             type="ring"
-            size={Dimensions.get('window').width * 0.65}
+            size={Math.min(windowWidth, 500) * 0.65}
             onPressIn={handleVoicePressIn}
             onPressOut={handleVoicePressOut}
           />
@@ -288,7 +292,6 @@ const styles = StyleSheet.create({
   },
   transcriptArea: {
     width: '100%',
-    height: height * 0.25, // Fixed height for transcript area at top
     paddingHorizontal: theme.spacing.md,
     paddingTop: theme.spacing.sm,
     justifyContent: 'flex-start',
@@ -297,7 +300,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     flex: 1,
-    minHeight: height * 0.35, // Middle section for orb
   },
   statusText: {
     color: theme.colors.text.secondary,

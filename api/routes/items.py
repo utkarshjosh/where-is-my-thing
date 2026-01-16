@@ -29,7 +29,20 @@ class ItemsListResponse(BaseModel):
 
 
 def _get_user_id(current_user: AuthenticatedUser) -> str:
-    """Get or create the local user ID from Clerk authentication."""
+    """Get or create the local user ID from Clerk authentication.
+    
+    Uses caching to avoid Neo4j lookup on every request.
+    """
+    from services.cache_service import get_user_id_cache
+    cache = get_user_id_cache()
+    
+    # Check cache first
+    cache_key = f"user:{current_user.clerk_user_id}"
+    cached_id = cache.get(cache_key)
+    if cached_id:
+        return cached_id
+    
+    # Cache miss - query Neo4j
     with UserService() as us:
         user = us.find_or_create_user(
             clerk_user_id=current_user.clerk_user_id,
@@ -37,6 +50,9 @@ def _get_user_id(current_user: AuthenticatedUser) -> str:
             first_name=current_user.first_name,
             last_name=current_user.last_name,
         )
+    
+    # Cache the result
+    cache.set(cache_key, user.id)
     return user.id
 
 

@@ -55,6 +55,13 @@ export interface UserProfile {
 
 // API Configuration
 const getApiBaseUrl = (): string => {
+    // Priority 1: Environment variable (useful for both production and custom dev endpoints)
+    const envBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
+    if (envBaseUrl) {
+        return envBaseUrl.endsWith('/') ? envBaseUrl.slice(0, -1) : envBaseUrl;
+    }
+
+    // Priority 2: Development fallbacks
     if (process.env.NODE_ENV === 'development') {
         // Use localhost or your local IP for development
         const hostUri = Constants.expoConfig?.hostUri;
@@ -65,18 +72,12 @@ const getApiBaseUrl = (): string => {
         return 'http://localhost:5000';
     }
 
-    // Production URL
-    const baseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
-
-    // On web, if no base URL is provided, we can assume the API is proxied or on the same domain
-    if (Platform.OS === 'web' && !baseUrl) {
+    // Priority 3: Web-specific fallback
+    if (Platform.OS === 'web') {
         return window.location.origin;
     }
 
-    if (!baseUrl) {
-        throw new Error('EXPO_PUBLIC_API_BASE_URL not configured');
-    }
-    return baseUrl;
+    throw new Error('EXPO_PUBLIC_API_BASE_URL not configured');
 };
 
 // API Client class

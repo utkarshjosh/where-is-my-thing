@@ -1,3 +1,14 @@
+# Stage 1: Build Admin UI
+FROM node:18-alpine as admin-build
+WORKDIR /app
+COPY admin-ui/package.json admin-ui/package-lock.json ./
+RUN npm ci
+COPY admin-ui .
+# We need to set the env var during build time for Vite
+ENV VITE_API_BASE_URL=https://things-api.utkarshjoshi.com
+RUN npm run build
+
+# Stage 2: Run API
 FROM python:3.10-slim
 
 WORKDIR /app
@@ -10,7 +21,11 @@ RUN apt-get update && apt-get install -y \
 
 # Copy requirements or pyproject.toml
 COPY pyproject.toml .
+# Copy backend code
 COPY . .
+
+# Copy built admin frontend from stage 1
+COPY --from=admin-build /app/dist /app/static/admin
 
 # Install dependencies
 RUN pip install --no-cache-dir .

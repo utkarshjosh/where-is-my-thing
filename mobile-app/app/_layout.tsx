@@ -5,7 +5,7 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { View } from 'react-native';
+import { View, Platform } from 'react-native';
 import 'react-native-reanimated';
 
 import { ClerkProvider, ClerkLoaded } from '@clerk/clerk-expo';
@@ -66,25 +66,38 @@ export default function RootLayout() {
 
 function RootLayoutNav() {
   return (
-    <View style={{ flex: 1, backgroundColor: theme.colors.background.primary }}>
-      <StatusBar style="light" />
-      <Stack
-        screenOptions={{
-          headerShown: false,
-          contentStyle: { backgroundColor: theme.colors.background.primary },
-          animation: 'fade',
-        }}
-      >
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-        <Stack.Screen
-          name="modal"
-          options={{
-            presentation: 'modal',
-            animation: 'slide_from_bottom',
+    <View style={{ flex: 1, backgroundColor: '#000000', alignItems: 'center' }}>
+      <View style={{
+        flex: 1,
+        width: '100%',
+        maxWidth: Platform.OS === 'web' ? 500 : undefined,
+        backgroundColor: theme.colors.background.primary,
+        // Add a subtle border on web to distinguish the app area
+        ...(Platform.OS === 'web' ? {
+          borderLeftWidth: 1,
+          borderRightWidth: 1,
+          borderColor: theme.colors.glass.border,
+        } : {})
+      }}>
+        <StatusBar style="light" />
+        <Stack
+          screenOptions={{
+            headerShown: false,
+            contentStyle: { backgroundColor: theme.colors.background.primary },
+            animation: 'fade',
           }}
-        />
-      </Stack>
+        >
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+          <Stack.Screen
+            name="modal"
+            options={{
+              presentation: 'modal',
+              animation: 'slide_from_bottom',
+            }}
+          />
+        </Stack>
+      </View>
     </View>
   );
 }

@@ -51,16 +51,24 @@ async def get_current_user(
     try:
         # Decode and verify the JWT
         # Clerk tokens are signed with RS256 by default
-        # For development, we can decode without verification if JWKS is complex
-        # In production, always verify with JWKS
         
         # First, decode without verification to get the issuer
         unverified = jwt.decode(token, options={"verify_signature": False})
         issuer = unverified.get("iss", "")
         
-        # Get JWKS from Clerk
-        jwks_url = f"{issuer}/.well-known/jwks.json"
-        jwks_client = PyJWKClient(jwks_url)
+        # Get cached JWKS client (avoids network call on every request)
+        from services.cache_service import get_jwks_cache
+        jwks_cache = get_jwks_cache()
+        
+        cache_key = f"jwks:{issuer}"
+        jwks_client = jwks_cache.get(cache_key)
+        
+        if jwks_client is None:
+            # Cache miss - create new client
+            jwks_url = f"{issuer}/.well-known/jwks.json"
+            jwks_client = PyJWKClient(jwks_url)
+            jwks_cache.set(cache_key, jwks_client)
+        
         signing_key = jwks_client.get_signing_key_from_jwt(token)
         
         # Verify and decode the token

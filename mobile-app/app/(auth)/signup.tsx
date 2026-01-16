@@ -134,6 +134,16 @@ export default function SignUpScreen() {
 
         setIsGoogleLoading(true);
         try {
+            if (Platform.OS === 'web') {
+                // On web, use redirect flow instead of popup
+                await signUp.authenticateWithRedirect({
+                    strategy: 'oauth_google',
+                    redirectUrl: '/(auth)/signup',
+                    redirectUrlComplete: '/(tabs)',
+                });
+                return;
+            }
+
             const { createdSessionId, setActive: setActiveSession } = await startSSOFlow({
                 strategy: 'oauth_google',
                 redirectUrl: Linking.createURL('/(tabs)', { scheme: 'mobileapp' }),
@@ -150,11 +160,16 @@ export default function SignUpScreen() {
             }
             console.error('Google sign-up error:', JSON.stringify(err, null, 2));
             const errorMessage = err.errors?.[0]?.message || err.message || 'Google sign-up failed. Please try again.';
-            Alert.alert('Google Sign-up Failed', errorMessage);
+
+            if (Platform.OS === 'web') {
+                console.error(errorMessage);
+            } else {
+                Alert.alert('Google Sign-up Failed', errorMessage);
+            }
         } finally {
             setIsGoogleLoading(false);
         }
-    }, [isLoaded, startSSOFlow]);
+    }, [isLoaded, signUp, startSSOFlow]);
 
     // Verification Code Screen
     if (pendingVerification) {

@@ -31,8 +31,6 @@ class MemoryService:
         Args:
             embedding_provider: Custom provider or defaults to Google
         """
-        settings = get_settings()
-        
         # Lazy import to avoid circular dependencies
         if embedding_provider is None:
             from adapters.google_embedding import GoogleEmbeddingProvider
@@ -40,11 +38,10 @@ class MemoryService:
         else:
             self._embedder = embedding_provider
         
-        # Direct Neo4j driver for vector operations
-        self._driver = GraphDatabase.driver(
-            settings.neo4j_uri,
-            auth=(settings.neo4j_username, settings.neo4j_password)
-        )
+        # Use shared Neo4j driver pool
+        from services.db_pool import get_neo4j_driver
+        self._driver = get_neo4j_driver()
+        self._owns_driver = False
     
     def build_profile_text(
         self,
@@ -182,8 +179,9 @@ class MemoryService:
             return [dict(r) for r in records]
     
     def close(self):
-        """Close Neo4j driver."""
-        self._driver.close()
+        """Close Neo4j driver if we own it."""
+        if hasattr(self, '_owns_driver') and self._owns_driver:
+            self._driver.close()
     
     def __enter__(self):
         return self
