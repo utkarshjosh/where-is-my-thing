@@ -362,75 +362,51 @@ class GraphService:
             return None
     
     def find_thing(self, search_query: str) -> dict:
-        """Find things matching a query (name, description, or tags).
+        """Find things matching a query using semantic (vector) search.
         
+        Uses embedding-based similarity search for fuzzy matching.
         If user_id is set, only returns things owned by that user.
         """
-        with self._driver.session() as session:
-            if self.user_id:
-                # User-scoped query
-                result = session.run(
-                    """
-                    MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
-                    WHERE toLower(t.name) CONTAINS toLower($search_term)
-                       OR toLower(t.description) CONTAINS toLower($search_term)
-                       OR ANY(tag IN t.tags WHERE toLower(tag) CONTAINS toLower($search_term))
-                    WITH t
-                    OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place)
-                    RETURN t, p
-                    LIMIT 10
-                    """,
-                    user_id=self.user_id,
-                    search_term=search_query.strip()
-                )
-            else:
-                result = session.run(
-                    """
-                    MATCH (t:Thing)
-                    WHERE toLower(t.name) CONTAINS toLower($search_term)
-                       OR toLower(t.description) CONTAINS toLower($search_term)
-                       OR ANY(tag IN t.tags WHERE toLower(tag) CONTAINS toLower($search_term))
-                    WITH t
-                    OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place)
-                    RETURN t, p
-                    LIMIT 10
-                    """,
-                    search_term=search_query.strip()
-                )
+        from services.memory_service import MemoryService
+        
+        with MemoryService() as ms:
+            results = ms.semantic_search(
+                query=search_query.strip(),
+                user_id=self.user_id,
+                limit=10
+            )
+        
+        things = []
+        for r in results:
+            thing_data = {
+                "id": r.get("id"),
+                "name": r.get("name"),
+                "description": r.get("description"),
+                "tags": list(r.get("tags") or []),
+                "location": r.get("location"),
+                "similarity_score": r.get("score")
+            }
             
-            things = []
-            for record in result:
-                node = record["t"]
-                place = record["p"]
-                
-                thing_data = {
-                    "id": node["id"],
-                    "name": node["name"],
-                    "description": node.get("description"),
-                    "tags": list(node.get("tags", [])),
-                    "location": place["name"] if place else None
-                }
-                
-                # Get full location path
-                if place:
-                    thing_data["location_path"] = self.get_location_path(node["id"])
-                
-                things.append(thing_data)
+            # Get full location path
+            if r.get("id"):
+                thing_data["location_path"] = self.get_location_path(r["id"])
             
-            if things:
-                return {
-                    "status": "success",
-                    "count": len(things),
-                    "things": things,
-                    "message": f"Found {len(things)} item(s) matching '{search_query}'"
-                }
-            else:
-                return {
-                    "status": "not_found",
-                    "count": 0,
-                    "things": [],
-                    "message": f"No items found matching '{search_query}'"
-                }
+            things.append(thing_data)
+        
+        if things:
+            return {
+                "status": "success",
+                "count": len(things),
+                "things": things,
+                "message": f"Found {len(things)} item(s) matching '{search_query}'"
+            }
+        else:
+            return {
+                "status": "not_found",
+                "count": 0,
+                "things": [],
+                "message": f"No items found matching '{search_query}'"
+            }
     
     def move_thing(self, thing_name: str, new_location: str) -> dict:
         """Move a thing to a new location."""
@@ -592,48 +568,149 @@ class GraphService:
             "message": f"Linked '{thing1['name']}' with '{thing2['name']}'"
         }
     
-    def list_contents(self, location: str) -> dict:
-        """List all things in a location."""
+    def list_contents(self, location: Optional[str] = None) -> dict:
+        """List all things in a location (including sub-locations).
+        
+        If location is None, lists all things owned by the user.
+        """
         with self._driver.session() as session:
-            result = session.run(
-                """
-                MATCH (p:Place)
-                WHERE toLower(p.name) CONTAINS toLower($location)
-                WITH p
-                MATCH (t:Thing)-[:LOCATED_IN]->(p)
-                RETURN t, p
-                """,
-                location=location.strip()
-            )
-            
+            if not location:
+                # List all things for user
+                if self.user_id:
+                    result = session.run(
+                        """
+                        MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
+                        OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place)
+                        RETURN t, p
+                        LIMIT 50
+                        """,
+                        user_id=self.user_id
+                    )
+                else:
+                    result = session.run("MATCH (t:Thing) OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place) RETURN t, p LIMIT 50")
+                
+                place_name = "All locations"
+            else:
+                # Find the target place first
+                # We use a broad search for the place name
+                if self.user_id:
+                    # Find things in this place OR its sub-places
+                    result = session.run(
+                        """
+                        MATCH (p:Place)
+                        WHERE toLower(p.name) CONTAINS toLower($location)
+                        WITH p
+                        MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)-[:LOCATED_IN]->(:Place)<-[:CONTAINS*0..]-(p)
+                        RETURN DISTINCT t, p
+                        LIMIT 50
+                        """,
+                        location=location.strip(),
+                        user_id=self.user_id
+                    )
+                else:
+                    result = session.run(
+                        """
+                        MATCH (p:Place)
+                        WHERE toLower(p.name) CONTAINS toLower($location)
+                        WITH p
+                        MATCH (t:Thing)-[:LOCATED_IN]->(:Place)<-[:CONTAINS*0..]-(p)
+                        RETURN DISTINCT t, p
+                        LIMIT 50
+                        """,
+                        location=location.strip()
+                    )
+                place_name = location
+
             things = []
-            place_name = None
+            final_place_name = place_name
             for record in result:
                 node = record["t"]
                 place = record["p"]
-                place_name = place["name"]
-                things.append({
+                if place and not location:
+                    # Keep track of last found place name if generic list
+                    final_place_name = "Global"
+                elif place and location:
+                    final_place_name = place["name"]
+                
+                thing_data = {
                     "name": node["name"],
                     "description": node.get("description"),
                     "tags": list(node.get("tags", []))
-                })
+                }
+                
+                # Add location path for clarity in hierarchical results
+                thing_data["location_path"] = self.get_location_path(node["id"])
+                things.append(thing_data)
             
             if things:
                 return {
                     "status": "success",
-                    "location": place_name,
+                    "location": final_place_name,
                     "count": len(things),
                     "things": things,
-                    "message": f"Found {len(things)} item(s) in '{place_name}'"
+                    "message": f"Found {len(things)} item(s) in '{final_place_name}'"
                 }
             else:
                 return {
                     "status": "empty",
-                    "location": location,
+                    "location": location or "all locations",
                     "count": 0,
                     "things": [],
-                    "message": f"No items found in '{location}'"
+                    "message": f"No items found in '{location or 'all locations'}'"
                 }
+
+    def list_places(self) -> dict:
+        """List all places used by the user."""
+        with self._driver.session() as session:
+            if self.user_id:
+                # Find all places connected to user's things
+                # Use COALESCE to handle null paths when no CONTAINS relationships exist
+                result = session.run(
+                    """
+                    MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)-[:LOCATED_IN]->(p:Place)
+                    OPTIONAL MATCH path = (p)<-[:CONTAINS*]-(ancestor:Place)
+                    WITH p, COALESCE(nodes(path), []) + [p] as all_nodes
+                    UNWIND all_nodes as all_places
+                    WITH DISTINCT all_places
+                    WHERE all_places IS NOT NULL
+                    RETURN all_places.name as name, all_places.place_type as type
+                    ORDER BY CASE all_places.place_type 
+                        WHEN 'room' THEN 0 
+                        WHEN 'zone' THEN 1 
+                        WHEN 'container' THEN 2 
+                        ELSE 3 
+                    END, all_places.name
+                    """,
+                    user_id=self.user_id
+                )
+            else:
+                # Fallback: list all places (for testing with adk web)
+                result = session.run(
+                    """
+                    MATCH (t:Thing)-[:LOCATED_IN]->(p:Place)
+                    OPTIONAL MATCH path = (p)<-[:CONTAINS*]-(ancestor:Place)
+                    WITH p, COALESCE(nodes(path), []) + [p] as all_nodes
+                    UNWIND all_nodes as all_places
+                    WITH DISTINCT all_places
+                    WHERE all_places IS NOT NULL
+                    RETURN all_places.name as name, all_places.place_type as type
+                    ORDER BY CASE all_places.place_type 
+                        WHEN 'room' THEN 0 
+                        WHEN 'zone' THEN 1 
+                        WHEN 'container' THEN 2 
+                        ELSE 3 
+                    END, all_places.name
+                    """
+                )
+            
+            places = [dict(r) for r in result]
+            
+            return {
+                "status": "success",
+                "count": len(places),
+                "places": places,
+                "message": f"Found {len(places)} location(s)"
+            }
     
     def attach_intent(self, thing_name: str, intent_name: str, description: Optional[str] = None) -> dict:
         """Attach an intent/purpose to a thing."""

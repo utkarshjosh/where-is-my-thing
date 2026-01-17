@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     # STT Model (Whisper)
     stt_model: str = "whisper-large-v3-turbo"
     
-    # Embeddings
+    # Embeddings (Google AI)
+    google_api_key: str = ""
     embedding_model: str = "text-embedding-004"
     embedding_batch_size: int = 100
     

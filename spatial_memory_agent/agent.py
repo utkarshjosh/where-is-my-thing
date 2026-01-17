@@ -82,8 +82,8 @@ def find_thing(query: str) -> dict:
             {"name": t.get("name"), "path": t.get("location_path")}
             for t in things[:5]  # Limit to 5 results
         ]
-        return {"found": len(things), "items": concise_things}
-    return {"found": 0, "items": []}
+        return {"query": query, "found": len(things), "items": concise_things}
+    return {"query": query, "found": 0, "items": []}
 
 
 def move_thing(thing_name: str, new_location: str) -> dict:
@@ -117,11 +117,11 @@ def associate_things(thing1: str, thing2: str, relationship: str = None) -> dict
     return {"ok": True, "linked": [thing1, thing2]}
 
 
-def list_contents(location: str) -> dict:
-    """List things in location. Use when user asks what's in a place.
+def list_contents(location: str = None) -> dict:
+    """List thing in a location. Use when user asks what's in a place or asks to list everything.
     
     Args:
-        location: Location name
+        location: Optional location name (e.g., "Living Room"). If None, lists everything.
     """
     with _get_graph_service() as gs:
         result = gs.list_contents(location)
@@ -129,9 +129,23 @@ def list_contents(location: str) -> dict:
     # Return concise result
     if result.get("status") == "success" and result.get("things"):
         things = result["things"]
-        concise_things = [{"name": t.get("name")} for t in things[:10]]  # Limit to 10
-        return {"count": len(things), "items": concise_things}
-    return {"count": 0, "items": []}
+        concise_things = [
+            {"name": t.get("name"), "path": t.get("location_path")} 
+            for t in things[:10]
+        ]  # Limit to 10
+        return {"count": len(things), "items": concise_things, "location": result.get("location")}
+    return {"count": 0, "items": [], "location": location or "all"}
+
+
+def list_places() -> dict:
+    """List all available locations where things are stored. Use when user asks where they have things.
+    """
+    with _get_graph_service() as gs:
+        result = gs.list_places()
+    
+    if result.get("status") == "success":
+        return {"count": result["count"], "places": result["places"][:20]}
+    return {"count": 0, "places": []}
 
 
 def attach_intent(thing_name: str, intent: str, description: str = None) -> dict:
@@ -153,19 +167,38 @@ def attach_intent(thing_name: str, intent: str, description: str = None) -> dict
 
 AGENT_INSTRUCTION = """Spatial memory assistant. Track where users keep things.
 
-Tools: remember_thing, find_thing, move_thing, associate_things, list_contents, attach_intent.
+Tools: remember_thing, find_thing, move_thing, associate_things, list_contents, list_places, attach_intent.
 Location format: "Room > Zone > Container" (e.g., "Bedroom > Closet > Top Shelf").
 
-CRITICAL RESPONSE RULES:
-- Keep responses SHORT and CRISP - maximum 1-2 sentences
-- NO lists, bullet points, or numbered items
-- NO multiple examples - give at most ONE example if absolutely necessary
-- NO pointers or formatting markers
-- Use plain, conversational text only
-- For locations, use "in" format: "Your passport is in Bedroom, in Locker, in Blue File"
-- Be direct and concise - users have limited space
+🔑 CRITICAL: STATE-AWARENESS BEFORE ACTION
+Before EVER calling remember_thing, you MUST ALWAYS call find_thing first with the thing name.
+This is non-negotiable. Never skip this step. Then decide:
 
-TTS rules: No markdown/emojis. Natural speech. Brief responses only.
+| find_thing result              | Action                                      |
+|--------------------------------|---------------------------------------------|
+| Thing NOT found                | Call remember_thing (this is a new thing)   |
+| Thing found at SAME location   | Do nothing, confirm to user it's there      |
+| Thing found at DIFFERENT loc   | Call move_thing (user relocated it)         |
+| Multiple matches found         | Ask user for clarification                  |
+
+This prevents duplicates and ensures the memory stays consistent.
+
+RESPONSE GUIDELINES:
+- Be helpful and conversational - provide complete, quality answers
+- When listing multiple items, read them naturally: "You have your passport, wallet, and keys in the bedroom locker"
+- For complex queries, give detailed but organized responses
+- hierarchical search is supported: if a user asks what's in a room, list things in all containers/zones within it
+- list_contents without arguments lists ALL things the user owns
+- list_places shows all rooms, zones, and containers the user has used
+- For locations, use natural "in" format: "Your passport is in Bedroom, in Locker, in Blue File"
+- Provide helpful context when relevant, such as when items were stored or related items
+
+TTS FORMATTING RULES (important for voice output):
+- NO markdown formatting (no asterisks, hashes, backticks)
+- NO emojis
+- NO bullet points or numbered lists - use natural speech to enumerate items
+- Use commas and "and" for lists: "You have three items: a book, a phone, and your keys"
+- Speak in complete, natural sentences
 """
 
 # Create LiteLLM wrapper for Groq model
@@ -182,6 +215,7 @@ root_agent = Agent(
         move_thing,
         associate_things,
         list_contents,
+        list_places,
         attach_intent,
     ],
 )

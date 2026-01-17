@@ -99,7 +99,7 @@ class MemoryService:
                 profile_text=profile_text
             )
     
-    def semantic_search(self, query: str, limit: int = 10) -> list[dict]:
+    def semantic_search(self, query: str, user_id: str = None, limit: int = 10, min_score: float = 0.55) -> list[dict]:
         """Fuzzy semantic search - for 'vibes' and similar descriptions.
         
         Use this for queries like:
@@ -107,25 +107,67 @@ class MemoryService:
         - "electronics I don't use often"
         - "things for emergencies"
         
+        Args:
+            query: Search term or phrase
+            user_id: If provided, only returns things owned by this user
+            limit: Maximum results to return
+            min_score: Minimum similarity score threshold (0.0 to 1.0, default 0.55)
+        
         Returns list of matching things with similarity scores.
+        Only returns results that are semantically relevant.
+        If there's a clear "winner" (top result much higher than others), 
+        filters out lower-scoring results.
         """
         result = self._embedder.embed_query(query)
         
         with self._driver.session() as session:
-            records = session.run("""
-                CALL db.index.vector.queryNodes(
-                    'thing_embedding', $limit, $embedding
-                ) YIELD node, score
-                WHERE score > 0.5
-                RETURN node.id as id, 
-                       node.name as name, 
-                       node.description as description,
-                       node.tags as tags,
-                       score
-                ORDER BY score DESC
-            """, limit=limit, embedding=result.vector)
+            if user_id:
+                # User-scoped semantic search
+                records = session.run("""
+                    CALL db.index.vector.queryNodes(
+                        'thing_embedding', $limit_extra, $embedding
+                    ) YIELD node, score
+                    WHERE score > $min_score
+                    MATCH (u:User {id: $user_id})-[:OWNS]->(node)
+                    WITH node, score
+                    OPTIONAL MATCH (node)-[:LOCATED_IN]->(p:Place)
+                    RETURN node.id as id, 
+                           node.name as name, 
+                           node.description as description,
+                           node.tags as tags,
+                           p.name as location,
+                           score
+                    ORDER BY score DESC
+                    LIMIT $limit
+                """, limit_extra=limit * 3, limit=limit, embedding=result.vector, user_id=user_id, min_score=min_score)
+            else:
+                # Global search (no user filter)
+                records = session.run("""
+                    CALL db.index.vector.queryNodes(
+                        'thing_embedding', $limit, $embedding
+                    ) YIELD node, score
+                    WHERE score > $min_score
+                    WITH node, score
+                    OPTIONAL MATCH (node)-[:LOCATED_IN]->(p:Place)
+                    RETURN node.id as id, 
+                           node.name as name, 
+                           node.description as description,
+                           node.tags as tags,
+                           p.name as location,
+                           score
+                    ORDER BY score DESC
+                """, limit=limit, embedding=result.vector, min_score=min_score)
             
-            return [dict(r) for r in records]
+            results = [dict(r) for r in records]
+            
+            # Smart filtering: if top result has significantly higher score, 
+            # filter out less relevant results
+            if len(results) >= 2:
+                top_score = results[0].get('score', 0)
+                # Keep only results within 0.15 of top score (clear winner filtering)
+                results = [r for r in results if r.get('score', 0) >= top_score - 0.15]
+            
+            return results
     
     def find_similar(self, thing_id: str, limit: int = 5) -> list[dict]:
         """Find things semantically similar to a given thing.
