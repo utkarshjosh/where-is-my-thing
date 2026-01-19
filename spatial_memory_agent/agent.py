@@ -61,8 +61,17 @@ def remember_thing(
             tags=tag_list
         )
     
-    # Return concise result
-    return {"ok": True, "name": result.get("thing_name"), "path": result.get("location_path")}
+    if result.get("status") == "error":
+        return {"ok": False, "error": result.get("message"), "matches": result.get("matches")}
+        
+    # Return concise result with action context
+    return {
+        "ok": True, 
+        "action": result.get("action"),
+        "name": result.get("thing_name"), 
+        "path": result.get("location_path") or result.get("new_location") or result.get("location"),
+        "message": result.get("message")
+    }
 
 
 def find_thing(query: str) -> dict:
@@ -97,9 +106,16 @@ def move_thing(thing_name: str, new_location: str) -> dict:
         result = gs.move_thing(thing_name, new_location)
     
     # Return concise result
+    # Return concise result
     if result.get("status") == "success":
-        return {"ok": True, "name": result.get("thing_name"), "path": result.get("new_location")}
-    return {"ok": False, "error": result.get("message", "Failed")}
+        return {
+            "ok": True, 
+            "action": result.get("action", "moved"),
+            "name": result.get("thing_name"), 
+            "path": result.get("new_location") or result.get("location"),
+            "message": result.get("message")
+        }
+    return {"ok": False, "error": result.get("message"), "matches": result.get("matches")}
 
 
 def associate_things(thing1: str, thing2: str, relationship: str = None) -> dict:
@@ -114,7 +130,9 @@ def associate_things(thing1: str, thing2: str, relationship: str = None) -> dict
         result = gs.associate_things(thing1, thing2, relationship)
     
     # Return concise result
-    return {"ok": True, "linked": [thing1, thing2]}
+    if result.get("status") == "success":
+        return {"ok": True, "linked": [thing1, thing2], "message": result.get("message")}
+    return {"ok": False, "error": result.get("message"), "matches": result.get("matches")}
 
 
 def list_contents(location: str = None) -> dict:
@@ -160,7 +178,9 @@ def attach_intent(thing_name: str, intent: str, description: str = None) -> dict
         result = gs.attach_intent(thing_name, intent, description)
     
     # Return concise result
-    return {"ok": True, "thing": thing_name, "intent": intent}
+    if result.get("status") == "success":
+        return {"ok": True, "thing": thing_name, "intent": intent, "message": result.get("message")}
+    return {"ok": False, "error": result.get("message"), "matches": result.get("matches")}
 
 
 # ========== Agent Definition ==========
@@ -170,18 +190,14 @@ AGENT_INSTRUCTION = """Spatial memory assistant. Track where users keep things.
 Tools: remember_thing, find_thing, move_thing, associate_things, list_contents, list_places, attach_intent.
 Location format: "Room > Zone > Container" (e.g., "Bedroom > Closet > Top Shelf").
 
-🔑 CRITICAL: STATE-AWARENESS BEFORE ACTION
-Before EVER calling remember_thing, you MUST ALWAYS call find_thing first with the thing name.
-This is non-negotiable. Never skip this step. Then decide:
+🔑 CRITICAL: STATE-AWARENESS
+The `remember_thing` and `move_thing` tools are state-aware and will detect if an item already exists or if a movement is redundant.
+However, to ensure precision and handle ambiguity:
+1. If you call a tool and it returns `ok: False` with an `error` message about ambiguity (multiple matches), you MUST ask the user for clarification. Use the `matches` provided in the tool output to give the user options: "I found multiple items matching that: [Item 1] in [Location 1] and [Item 2] in [Location 2]. Which one did you mean?"
+2. To avoid these errors, you SHOULD call `find_thing` first if the user's request is broad (e.g., "my book" when they might have many).
+3. If multiple matches exist in `find_thing` results, ALWAYS ask for clarification before proceeding with a store or move.
 
-| find_thing result              | Action                                      |
-|--------------------------------|---------------------------------------------|
-| Thing NOT found                | Call remember_thing (this is a new thing)   |
-| Thing found at SAME location   | Do nothing, confirm to user it's there      |
-| Thing found at DIFFERENT loc   | Call move_thing (user relocated it)         |
-| Multiple matches found         | Ask user for clarification                  |
-
-This prevents duplicates and ensures the memory stays consistent.
+The tools will return an `action` (created, moved, updated, or no_change) which you should use to confirm the result naturally to the user.
 
 RESPONSE GUIDELINES:
 - Be helpful and conversational - provide complete, quality answers

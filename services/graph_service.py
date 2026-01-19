@@ -180,10 +180,41 @@ class GraphService:
         tags = tags or []
         
         # Check if thing already exists
-        existing = self.find_thing_by_name(thing_name)
-        if existing:
-            # Update location instead
-            return self.move_thing(thing_name, location)
+        matches = self.find_thing_by_name(thing_name)
+        
+        if len(matches) > 1:
+            return {
+                "status": "error",
+                "error_type": "ambiguity",
+                "message": f"Multiple items match '{thing_name}': {[m['name'] for m in matches]}. Please be more specific.",
+                "matches": matches
+            }
+            
+        if matches:
+            existing = matches[0]
+            # Update description and tags if provided
+            if description is not None or tags is not None:
+                with self._driver.session() as session:
+                    query = "MATCH (t:Thing {id: $id}) SET t.updated_at = datetime()"
+                    params = {"id": existing["id"]}
+                    if description is not None:
+                        query += ", t.description = $description"
+                        params["description"] = description
+                    if tags is not None:
+                        query += ", t.tags = $tags"
+                        params["tags"] = tags
+                    session.run(query, **params)
+            
+            # Update location
+            # If location is the same, move_thing will handle it as 'no change'
+            result = self.move_thing(thing_name, location)
+            
+            # If we also provided new description or tags, mark as updated if it wasn't a move
+            if result.get("action") == "no_change" and (description is not None or tags is not None):
+                result["action"] = "updated"
+                result["message"] = f"Updated metadata for '{thing_name}'"
+            
+            return result
         
         # Create location hierarchy
         leaf_place = self.create_location_hierarchy(location)
@@ -281,21 +312,23 @@ class GraphService:
         
         return {
             "status": "success",
+            "action": "created",
             "thing_id": thing.id,
             "thing_name": thing.name,
             "location_path": location_path,
-            "message": f"Stored '{thing.name}' in {location_path}"
+            "message": f"Stored new item '{thing.name}' in {location_path}"
         }
     
-    def find_thing_by_name(self, name: str) -> Optional[dict]:
-        """Find a thing by exact or fuzzy name match.
+    def find_thing_by_name(self, name: str) -> list[dict]:
+        """Find things by exact or fuzzy name match.
         
-        If user_id is set, only returns things owned by that user.
+        Returns a list of all matching things.
+        Prioritizes exact matches: if exact matches exist, only they are returned.
+        If no exact matches, returns items where name CONTAINS the search term.
         """
         with self._driver.session() as session:
-            # Build query based on whether user filtering is needed
+            # First try exact matches
             if self.user_id:
-                # User-scoped query
                 result = session.run(
                     """
                     MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
@@ -306,7 +339,6 @@ class GraphService:
                     name=name.strip()
                 )
             else:
-                # Global query (for backwards compatibility)
                 result = session.run(
                     """
                     MATCH (t:Thing)
@@ -315,25 +347,27 @@ class GraphService:
                     """,
                     name=name.strip()
                 )
-            record = result.single()
             
-            if record:
-                node = record["t"]
-                return {
-                    "id": node["id"],
-                    "name": node["name"],
-                    "description": node.get("description"),
-                    "tags": list(node.get("tags", []))
-                }
+            records = list(result)
+            if records:
+                return [
+                    {
+                        "id": r["t"]["id"],
+                        "name": r["t"]["name"],
+                        "description": r["t"].get("description"),
+                        "tags": list(r["t"].get("tags", [])),
+                        "location_path": self.get_location_path(r["t"]["id"])
+                    }
+                    for r in records
+                ]
             
-            # Try fuzzy match
+            # If no exact match, try fuzzy match (CONTAINS)
             if self.user_id:
                 result = session.run(
                     """
                     MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
                     WHERE toLower(t.name) CONTAINS toLower($name)
                     RETURN t
-                    LIMIT 1
                     """,
                     user_id=self.user_id,
                     name=name.strip()
@@ -344,22 +378,21 @@ class GraphService:
                     MATCH (t:Thing)
                     WHERE toLower(t.name) CONTAINS toLower($name)
                     RETURN t
-                    LIMIT 1
                     """,
                     name=name.strip()
                 )
-            record = result.single()
             
-            if record:
-                node = record["t"]
-                return {
-                    "id": node["id"],
-                    "name": node["name"],
-                    "description": node.get("description"),
-                    "tags": list(node.get("tags", []))
+            records = list(result)
+            return [
+                {
+                    "id": r["t"]["id"],
+                    "name": r["t"]["name"],
+                    "description": r["t"].get("description"),
+                    "tags": list(r["t"].get("tags", [])),
+                    "location_path": self.get_location_path(r["t"]["id"])
                 }
-            
-            return None
+                for r in records
+            ]
     
     def find_thing(self, search_query: str) -> dict:
         """Find things matching a query using semantic (vector) search.
@@ -411,13 +444,23 @@ class GraphService:
     def move_thing(self, thing_name: str, new_location: str) -> dict:
         """Move a thing to a new location."""
         # Find the thing
-        thing = self.find_thing_by_name(thing_name)
-        if not thing:
+        matches = self.find_thing_by_name(thing_name)
+        
+        if not matches:
             return {
                 "status": "error",
                 "message": f"Thing '{thing_name}' not found"
             }
-        
+            
+        if len(matches) > 1:
+            return {
+                "status": "error",
+                "error_type": "ambiguity",
+                "message": f"Multiple items match '{thing_name}': {[m['name'] for m in matches]}. Which one do you want to move?",
+                "matches": matches
+            }
+            
+        thing = matches[0]
         thing_id = thing["id"]
         
         # Get old location
@@ -425,6 +468,17 @@ class GraphService:
         
         # Create new location hierarchy
         new_place = self.create_location_hierarchy(new_location)
+        
+        # Check if location actually changed
+        new_path = self.get_location_path(thing_id)
+        if old_location and old_location["id"] == new_place.id:
+            return {
+                "status": "success",
+                "action": "no_change",
+                "thing_name": thing["name"],
+                "location": new_path,
+                "message": f"'{thing['name']}' is already in {new_path}"
+            }
         
         with self._driver.session() as session:
             # Remove old LOCATED_IN relationship
@@ -479,12 +533,16 @@ class GraphService:
         
         new_path = self.get_location_path(thing_id)
         
+        # Re-index for semantic search (location changed)
+        self._reindex_thing(thing_id)
+        
         return {
             "status": "success",
+            "action": "moved",
             "thing_name": thing["name"],
             "old_location": old_location.get("name") if old_location else "unknown",
             "new_location": new_path,
-            "message": f"Moved '{thing['name']}' to {new_path}"
+            "message": f"Moved '{thing['name']}' from {old_location.get('name') if old_location else 'unknown'} to {new_path}"
         }
     
     def _get_current_location(self, thing_id: str) -> Optional[dict]:
@@ -534,6 +592,44 @@ class GraphService:
                 path_parts = list(reversed(ancestors)) + [leaf["name"]]
                 return " → ".join(path_parts)
             return "unknown location"
+
+    def _reindex_thing(self, thing_id: str):
+        """Re-generate and store embedding for a thing.
+        
+        Fetches all relevant data from the graph to build a fresh profile.
+        """
+        try:
+            from services.memory_service import MemoryService
+            with self._driver.session() as session:
+                result = session.run(
+                    """
+                    MATCH (t:Thing {id: $id})
+                    OPTIONAL MATCH (t)-[:USED_FOR]->(i:Intent)
+                    RETURN t.name as name, 
+                           t.description as description, 
+                           t.tags as tags, 
+                           i.name as intent
+                    LIMIT 1
+                    """,
+                    id=thing_id
+                )
+                record = result.single()
+                if not record:
+                    return
+                
+                location_path = self.get_location_path(thing_id)
+                
+                with MemoryService() as ms:
+                    profile_text = ms.build_profile_text(
+                        name=record["name"],
+                        description=record["description"],
+                        tags=list(record["tags"] or []),
+                        location_path=location_path,
+                        intent=record["intent"]
+                    )
+                    ms.embed_thing(thing_id, profile_text)
+        except Exception as e:
+            print(f"Warning: Failed to re-index thing '{thing_id}': {e}")
     
     def associate_things(
         self, 
@@ -542,13 +638,21 @@ class GraphService:
         relationship: Optional[str] = None
     ) -> dict:
         """Create a RELATED_TO relationship between two things."""
-        thing1 = self.find_thing_by_name(thing1_name)
-        thing2 = self.find_thing_by_name(thing2_name)
+        matches1 = self.find_thing_by_name(thing1_name)
+        matches2 = self.find_thing_by_name(thing2_name)
         
-        if not thing1:
+        if not matches1:
             return {"status": "error", "message": f"'{thing1_name}' not found"}
-        if not thing2:
+        if len(matches1) > 1:
+            return {"status": "error", "message": f"Ambiguous: multiple items match '{thing1_name}'", "matches": matches1}
+            
+        if not matches2:
             return {"status": "error", "message": f"'{thing2_name}' not found"}
+        if len(matches2) > 1:
+            return {"status": "error", "message": f"Ambiguous: multiple items match '{thing2_name}'", "matches": matches2}
+            
+        thing1 = matches1[0]
+        thing2 = matches2[0]
         
         with self._driver.session() as session:
             session.run(
@@ -714,9 +818,13 @@ class GraphService:
     
     def attach_intent(self, thing_name: str, intent_name: str, description: Optional[str] = None) -> dict:
         """Attach an intent/purpose to a thing."""
-        thing = self.find_thing_by_name(thing_name)
-        if not thing:
+        matches = self.find_thing_by_name(thing_name)
+        if not matches:
             return {"status": "error", "message": f"'{thing_name}' not found"}
+        if len(matches) > 1:
+             return {"status": "error", "message": f"Ambiguous: multiple items match '{thing_name}'", "matches": matches}
+             
+        thing = matches[0]
         
         with self._driver.session() as session:
             # Find or create intent
@@ -741,6 +849,9 @@ class GraphService:
                 thing_id=thing["id"],
                 intent_id=intent_node["id"]
             )
+        
+        # Re-index (intent changed)
+        self._reindex_thing(thing["id"])
         
         return {
             "status": "success",
