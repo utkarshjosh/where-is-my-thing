@@ -17,7 +17,7 @@ from config import get_settings
 
 # Set Groq API key for LiteLLM
 settings = get_settings()
-os.environ["GROQ_API_KEY"] = settings.groq_api_key
+os.environ["GROQ_API_KEY"] = settings.groq_llm_api_key
 
 # Configure LiteLLM rate limiting for Groq
 # Rate limit: 6000 requests/minute = 100 requests/second

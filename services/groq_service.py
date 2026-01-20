@@ -5,7 +5,7 @@ import logging
 import asyncio
 from typing import Optional
 from config import get_settings
-from services.rate_limiter import get_groq_rate_limiter
+from services.rate_limiter import get_groq_voice_rate_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -17,15 +17,15 @@ class GroqService:
     
     def __init__(self):
         self.settings = get_settings()
-        if not self.settings.groq_api_key:
-            raise ValueError("GROQ_API_KEY is not configured")
+        if not self.settings.groq_voice_api_key:
+            raise ValueError("GROQ_VOICE_API_KEY is not configured")
         
         # Create a persistent HTTP client with connection pooling
         self._client: Optional[httpx.AsyncClient] = None
         self._client_lock = asyncio.Lock()
         
         # Rate limiter
-        self.rate_limiter = get_groq_rate_limiter()
+        self.rate_limiter = get_groq_voice_rate_limiter()
     
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create the persistent HTTP client."""
@@ -54,7 +54,7 @@ class GroqService:
     def _get_headers(self, content_type: Optional[str] = None) -> dict:
         """Get headers for Groq API requests."""
         headers = {
-            "Authorization": f"Bearer {self.settings.groq_api_key}",
+            "Authorization": f"Bearer {self.settings.groq_voice_api_key}",
         }
         if content_type:
             headers["Content-Type"] = content_type
@@ -96,7 +96,7 @@ class GroqService:
                 
                 response = await client.post(
                     f"{self.BASE_URL}/audio/transcriptions",
-                    headers={"Authorization": f"Bearer {self.settings.groq_api_key}"},
+                    headers={"Authorization": f"Bearer {self.settings.groq_voice_api_key}"},
                     files=files,
                     data=data,
                 )

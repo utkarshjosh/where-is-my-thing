@@ -108,8 +108,9 @@ class RateLimiter:
         }
 
 
-# Global rate limiter instance
+# Global rate limiter instances
 _groq_rate_limiter: Optional[RateLimiter] = None
+_groq_voice_rate_limiter: Optional[RateLimiter] = None
 
 
 def get_groq_rate_limiter() -> RateLimiter:
@@ -122,4 +123,16 @@ def get_groq_rate_limiter() -> RateLimiter:
             max_burst=100
         )
     return _groq_rate_limiter
+
+
+def get_groq_voice_rate_limiter() -> RateLimiter:
+    """Get or create the global Groq voice rate limiter."""
+    global _groq_voice_rate_limiter
+    if _groq_voice_rate_limiter is None:
+        _groq_voice_rate_limiter = RateLimiter(
+            max_requests=90,  # 90/sec = 5400/min (conservative)
+            time_window=1.0,
+            max_burst=100
+        )
+    return _groq_voice_rate_limiter
 

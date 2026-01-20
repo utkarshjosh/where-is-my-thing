@@ -3,13 +3,13 @@ import {
     View,
     Text,
     StyleSheet,
-    Dimensions,
     TouchableOpacity,
     PanResponder,
     ActivityIndicator,
     RefreshControl,
     ScrollView,
     Platform,
+    useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
@@ -25,9 +25,6 @@ import theme, { categories, CategoryKey } from '@/constants/theme';
 import { GlassContainer } from '@/components/ui/GlassContainer';
 import { useGraph } from '@/hooks/useGraph';
 import { GraphNode, GraphEdge } from '@/services/api';
-
-const { width, height } = Dimensions.get('window');
-const GRAPH_SIZE = width - theme.spacing.md * 2;
 
 // Delay before refetching when page comes into focus (in milliseconds)
 const REFETCH_DELAY = 1000; // 1 second delay
@@ -100,11 +97,15 @@ function computeNodePositions(nodes: GraphNode[], edges: GraphEdge[]): Map<strin
 }
 
 export default function GraphScreen() {
+    const { width: windowWidth } = useWindowDimensions();
     const { nodes, edges, isLoading, error, refresh, fetchGraph } = useGraph({ autoFetch: false });
     const [selectedNode, setSelectedNode] = useState<string | null>(null);
     const [scale, setScale] = useState(1);
     const [refreshing, setRefreshing] = useState(false);
-    const refetchTimerRef = useRef<NodeJS.Timeout | null>(null);
+    const refetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
+
+    const graphSize = Math.max(240, Math.min(windowWidth - theme.spacing.md * 2, 520));
 
     // Lazy refetch when page comes into focus with delay
     useFocusEffect(
@@ -152,6 +153,36 @@ export default function GraphScreen() {
             : null
     ).current;
 
+    const webPanHandlers = Platform.OS === 'web'
+        ? {
+              onStartShouldSetResponder: () => true,
+              onMoveShouldSetResponder: () => true,
+              onResponderGrant: (event: any) => {
+                  const { pageX, pageY } = event.nativeEvent;
+                  lastPointerRef.current = { x: pageX, y: pageY };
+              },
+              onResponderMove: (event: any) => {
+                  if (!lastPointerRef.current) return;
+                  const { pageX, pageY } = event.nativeEvent;
+                  const dx = pageX - lastPointerRef.current.x;
+                  const dy = pageY - lastPointerRef.current.y;
+                  translateX.value = translateX.value + dx;
+                  translateY.value = translateY.value + dy;
+                  lastPointerRef.current = { x: pageX, y: pageY };
+              },
+              onResponderRelease: () => {
+                  lastPointerRef.current = null;
+                  translateX.value = withSpring(0);
+                  translateY.value = withSpring(0);
+              },
+              onResponderTerminate: () => {
+                  lastPointerRef.current = null;
+                  translateX.value = withSpring(0);
+                  translateY.value = withSpring(0);
+              },
+          }
+        : {};
+
     const graphStyle = useAnimatedStyle(() => ({
         transform: [
             { translateX: translateX.value },
@@ -184,10 +215,10 @@ export default function GraphScreen() {
     // Get node position in pixels
     const getNodePosition = (nodeId: string) => {
         const pos = nodePositions.get(nodeId);
-        if (!pos) return { x: GRAPH_SIZE / 2, y: GRAPH_SIZE / 2 };
+        if (!pos) return { x: graphSize / 2, y: graphSize / 2 };
         return {
-            x: pos.x * GRAPH_SIZE,
-            y: pos.y * GRAPH_SIZE,
+            x: pos.x * graphSize,
+            y: pos.y * graphSize,
         };
     };
 
@@ -232,15 +263,15 @@ export default function GraphScreen() {
                     />
                 }
             >
-                <View style={styles.graphWrapper}>
-                    <GlassContainer style={styles.graphContainer}>
+                <View style={[styles.graphWrapper, { minHeight: graphSize + 40 }]}>
+                    <GlassContainer style={[styles.graphContainer, { minHeight: graphSize }]}>
                         {isLoading && nodes.length === 0 ? (
-                            <View style={styles.loadingContainer}>
+                            <View style={[styles.loadingContainer, { minHeight: graphSize }]}>
                                 <ActivityIndicator size="large" color={theme.colors.primary.base} />
                                 <Text style={styles.loadingText}>Loading graph...</Text>
                             </View>
                         ) : nodes.length === 0 ? (
-                            <View style={styles.emptyContainer}>
+                            <View style={[styles.emptyContainer, { minHeight: graphSize }]}>
                                 <Ionicons name="git-network-outline" size={48} color={theme.colors.text.muted} />
                                 <Text style={styles.emptyText}>No data yet</Text>
                                 <Text style={styles.emptySubtext}>
@@ -250,9 +281,10 @@ export default function GraphScreen() {
                         ) : (
                             <Animated.View
                                 {...(panResponder?.panHandlers || {})}
-                                style={[styles.graph, graphStyle]}
+                                {...webPanHandlers}
+                                style={[styles.graph, { width: graphSize, height: graphSize }, graphStyle]}
                             >
-                                <Svg width={GRAPH_SIZE} height={GRAPH_SIZE}>
+                                <Svg width={graphSize} height={graphSize}>
                                     <Defs>
                                         <RadialGradient id="nodeGradient" cx="50%" cy="50%" r="50%">
                                             <Stop offset="0%" stopColor={theme.colors.primary.light} stopOpacity="0.8" />
@@ -466,23 +498,24 @@ const styles = StyleSheet.create({
     },
     scrollContent: {
         flexGrow: 1,
+        alignItems: 'stretch',
     },
     graphWrapper: {
         flex: 1,
         padding: theme.spacing.md,
         position: 'relative',
-        minHeight: GRAPH_SIZE + 40,
+        alignItems: 'center',
     },
     graphContainer: {
         flex: 1,
         overflow: 'hidden',
-        minHeight: GRAPH_SIZE,
+        width: '100%',
+        alignItems: 'center',
     },
     loadingContainer: {
         flex: 1,
         alignItems: 'center',
         justifyContent: 'center',
-        minHeight: GRAPH_SIZE,
     },
     loadingText: {
         color: theme.colors.text.muted,
@@ -492,7 +525,6 @@ const styles = StyleSheet.create({
         flex: 1,
         alignItems: 'center',
         justifyContent: 'center',
-        minHeight: GRAPH_SIZE,
         padding: theme.spacing.xl,
     },
     emptyText: {
@@ -508,8 +540,6 @@ const styles = StyleSheet.create({
         marginTop: theme.spacing.xs,
     },
     graph: {
-        width: GRAPH_SIZE,
-        height: GRAPH_SIZE,
         position: 'relative',
     },
     nodeLabel: {
@@ -545,6 +575,7 @@ const styles = StyleSheet.create({
     infoPanel: {
         paddingHorizontal: theme.spacing.md,
         marginTop: theme.spacing.md,
+        width: '100%',
     },
     infoContainer: {
         padding: theme.spacing.md,
@@ -590,6 +621,7 @@ const styles = StyleSheet.create({
     legend: {
         paddingHorizontal: theme.spacing.md,
         marginTop: theme.spacing.md,
+        width: '100%',
     },
     legendTitle: {
         color: theme.colors.text.muted,

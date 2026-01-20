@@ -6,8 +6,11 @@ from functools import lru_cache
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
-    # Groq API (for LLM, TTS, STT)
-    groq_api_key: str = ""
+    # Groq API (LLM)
+    groq_llm_api_key: str = ""
+    
+    # Groq API (Voice: TTS, STT)
+    groq_voice_api_key: str = ""
     
     # LLM Model (via LiteLLM)
     llm_model: str = "groq/qwen-qwq-32b"

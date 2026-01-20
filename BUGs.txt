@@ -1,0 +1,34 @@
+ | 17:11:03 - LiteLLM:INFO: utils.py:3807 - 
+api-1    | LiteLLM completion() model= qwen/qwen3-32b; provider = groq
+api-1    | 2026-01-19 17:11:19 - services.groq_service - ERROR - ❌ STT HTTP Error 400: {'error': {'message': 'Audio file is too short. Minimum audio length is 0.01 seconds.', 'type': 'invalid_request_error'}}
+api-1    | 2026-01-19 17:11:19 - api.routes.voice - ERROR - ❌ STT error: Client error '400 Bad Request' for url 'https://api.groq.com/openai/v1/audio/transcriptions'
+api-1    | For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
+api-1    | Traceback (most recent call last):
+api-1    |   File "/app/api/routes/voice.py", line 427, in voice_agent_websocket
+api-1    |     transcript = await groq_service.speech_to_text(
+api-1    |   File "/app/services/groq_service.py", line 103, in speech_to_text
+api-1    |     response.raise_for_status()
+api-1    |   File "/usr/local/lib/python3.10/site-packages/httpx/_models.py", line 829, in raise_for_status
+api-1    |     raise HTTPStatusError(message, request=request, response=self)
+api-1    | httpx.HTTPStatusError: Client error '400 Ba
+
+
+why even send audio that small ??
+
+
+login doesnt work
+
+
+dont call it v1.0.0 its not fucking stable 
+
+see @profile page
+
+signout doesnt work
+
+api do an early fetch , update alwaty
+
+
+graph ui is not workoable
+
+
+lets just make a react app for web

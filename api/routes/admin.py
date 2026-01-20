@@ -7,7 +7,7 @@ import os
 
 from services.metrics_service import get_metrics_service
 from services.cache_service import get_cache_stats
-from services.rate_limiter import get_groq_rate_limiter
+from services.rate_limiter import get_groq_rate_limiter, get_groq_voice_rate_limiter
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -18,6 +18,8 @@ class SystemHealth(BaseModel):
     status: str
     neo4j: str
     groq_api: str
+    groq_llm_api: str
+    groq_voice_api: str
     uptime_seconds: float
     version: str
 
@@ -37,6 +39,11 @@ class RateLimitStats(BaseModel):
     current_tokens: float
     requests_in_window: int
     limit_per_second: int
+    voice_total_requests: int
+    voice_rate_limited_requests: int
+    voice_current_tokens: float
+    voice_requests_in_window: int
+    voice_limit_per_second: int
 
 
 class EndpointMetric(BaseModel):
@@ -81,7 +88,14 @@ async def admin_health():
         neo4j_status = f"error: {str(e)[:50]}"
     
     # Check Groq API (just check if configured)
-    groq_status = "configured" if settings.groq_api_key else "not_configured"
+    groq_llm_status = "configured" if settings.groq_llm_api_key else "not_configured"
+    groq_voice_status = "configured" if settings.groq_voice_api_key else "not_configured"
+    if groq_llm_status == "configured" and groq_voice_status == "configured":
+        groq_status = "configured"
+    elif groq_llm_status == "configured" or groq_voice_status == "configured":
+        groq_status = "partial"
+    else:
+        groq_status = "not_configured"
     
     # Overall status
     all_ok = neo4j_status == "connected" and groq_status == "configured"
@@ -90,6 +104,8 @@ async def admin_health():
         status="healthy" if all_ok else "degraded",
         neo4j=neo4j_status,
         groq_api=groq_status,
+        groq_llm_api=groq_llm_status,
+        groq_voice_api=groq_voice_status,
         uptime_seconds=get_metrics_service().get_summary()["uptime_seconds"],
         version="0.1.0"
     )
@@ -138,13 +154,20 @@ async def admin_rate_limit():
     """Get Groq rate limiter statistics."""
     rate_limiter = get_groq_rate_limiter()
     stats = rate_limiter.get_stats()
+    voice_rate_limiter = get_groq_voice_rate_limiter()
+    voice_stats = voice_rate_limiter.get_stats()
     
     return RateLimitStats(
         total_requests=stats["total_requests"],
         rate_limited_requests=stats["rate_limited_requests"],
         current_tokens=round(stats["current_tokens"], 2),
         requests_in_window=stats["requests_in_window"],
-        limit_per_second=90  # From rate limiter config
+        limit_per_second=90,  # From rate limiter config
+        voice_total_requests=voice_stats["total_requests"],
+        voice_rate_limited_requests=voice_stats["rate_limited_requests"],
+        voice_current_tokens=round(voice_stats["current_tokens"], 2),
+        voice_requests_in_window=voice_stats["requests_in_window"],
+        voice_limit_per_second=90  # From rate limiter config
     )
 
 

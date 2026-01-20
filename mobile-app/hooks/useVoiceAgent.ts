@@ -6,6 +6,7 @@
 import { apiClient } from '@/services/api';
 import { useAuth } from '@clerk/clerk-expo';
 import { Audio } from 'expo-av';
+import { Platform } from 'react-native';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 export type VoiceState = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';
@@ -48,6 +49,10 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
     const isPlayingRef = useRef(false);
     const isRecordingRef = useRef(false);
     const isStartingRecordingRef = useRef(false);
+    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+    const mediaStreamRef = useRef<MediaStream | null>(null);
+    const webChunksRef = useRef<Blob[]>([]);
+    const webStopResolverRef = useRef<((blob: Blob | null) => void) | null>(null);
 
     // Connect to WebSocket
     const connect = useCallback(async () => {
@@ -223,6 +228,18 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
         }
     }, [stopAudioPlayback]);
 
+    const blobToBase64 = useCallback((blob: Blob) => {
+        return new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+                const result = reader.result as string;
+                resolve(result.split(',')[1] || '');
+            };
+            reader.onerror = () => reject(new Error('Failed to read audio blob'));
+            reader.readAsDataURL(blob);
+        });
+    }, []);
+
     // Start recording
     const startListening = useCallback(async () => {
         // Prevent multiple simultaneous calls
@@ -232,6 +249,11 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
         }
 
         // Check if already recording
+        if (Platform.OS === 'web' && isRecordingRef.current && mediaRecorderRef.current) {
+            console.log('Recording already in progress, skipping...');
+            return;
+        }
+
         if (isRecordingRef.current && recordingRef.current) {
             // Double-check by verifying recording status
             try {
@@ -259,6 +281,48 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
         }
 
         isStartingRecordingRef.current = true;
+
+        if (Platform.OS === 'web') {
+            try {
+                stopAudioPlayback();
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaStreamRef.current = stream;
+
+                const recorder = new MediaRecorder(stream);
+                webChunksRef.current = [];
+
+                recorder.ondataavailable = (event) => {
+                    if (event.data && event.data.size > 0) {
+                        webChunksRef.current.push(event.data);
+                    }
+                };
+
+                recorder.onstop = () => {
+                    const mimeType = recorder.mimeType || 'audio/webm';
+                    const blob = new Blob(webChunksRef.current, { type: mimeType });
+                    webChunksRef.current = [];
+                    if (webStopResolverRef.current) {
+                        webStopResolverRef.current(blob);
+                        webStopResolverRef.current = null;
+                    }
+                };
+
+                recorder.start();
+                mediaRecorderRef.current = recorder;
+                isRecordingRef.current = true;
+                setState('listening');
+            } catch (e) {
+                const err = e instanceof Error ? e : new Error('Failed to start recording');
+                setError(err);
+                setState('error');
+                options.onError?.(err);
+                mediaRecorderRef.current = null;
+                isRecordingRef.current = false;
+            } finally {
+                isStartingRecordingRef.current = false;
+            }
+            return;
+        }
 
         try {
             // Stop any ongoing AI audio playback when user starts speaking
@@ -352,7 +416,11 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
 
     // Stop recording and send audio
     const stopListening = useCallback(async () => {
-        if (!recordingRef.current || !isRecordingRef.current) {
+        if (Platform.OS === 'web') {
+            if (!mediaRecorderRef.current || !isRecordingRef.current) {
+                return;
+            }
+        } else if (!recordingRef.current || !isRecordingRef.current) {
             return;
         }
 
@@ -364,6 +432,34 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
             const interval = (recordingRef.current as any)._sendInterval;
             if (interval) {
                 clearInterval(interval);
+            }
+
+            if (Platform.OS === 'web') {
+                const recorder = mediaRecorderRef.current;
+                const blob = await new Promise<Blob | null>((resolve) => {
+                    webStopResolverRef.current = resolve;
+                    recorder?.stop();
+                });
+
+                mediaRecorderRef.current = null;
+                if (mediaStreamRef.current) {
+                    mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+                    mediaStreamRef.current = null;
+                }
+
+                if (blob && wsRef.current?.readyState === WebSocket.OPEN) {
+                    const base64 = await blobToBase64(blob);
+                    if (base64) {
+                        wsRef.current?.send(JSON.stringify({
+                            type: 'audio',
+                            data: base64,
+                        }));
+                        wsRef.current?.send(JSON.stringify({
+                            type: 'end_turn',
+                        }));
+                    }
+                }
+                return;
             }
 
             // Stop recording
@@ -404,7 +500,7 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
             recordingRef.current = null;
             isRecordingRef.current = false;
         }
-    }, [options]);
+    }, [options, blobToBase64]);
 
     // Send text message
     const sendMessage = useCallback(async (text: string) => {
@@ -455,6 +551,14 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
             isStartingRecordingRef.current = false;
             if (audioPlayerRef.current) {
                 audioPlayerRef.current.unloadAsync();
+            }
+            if (mediaRecorderRef.current) {
+                mediaRecorderRef.current.stop();
+                mediaRecorderRef.current = null;
+            }
+            if (mediaStreamRef.current) {
+                mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+                mediaStreamRef.current = null;
             }
         };
     }, [disconnect]);
