@@ -123,13 +123,16 @@ class VoiceWebSocketManager {
       throw new Error('Token getter not set');
     }
 
+    // Store token getter in local variable so TypeScript knows it's not null
+    const tokenGetter = this.getTokenFn;
+
     this.isIntentionallyClosed = false;
     this.clearReconnectTimeout();
 
     // Create a promise that tracks this connection attempt
     this.connectingPromise = (async () => {
       try {
-        const token = await this.getTokenFn();
+        const token = await tokenGetter();
         if (!token) {
           throw new Error('Not authenticated');
         }

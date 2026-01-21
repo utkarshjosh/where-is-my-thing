@@ -8,7 +8,10 @@ import { useRateLimitStore } from '@/stores/rateLimitStore';
 
 // Use /api prefix for Vite proxy in development
 // In production, set VITE_API_BASE_URL to the actual backend URL
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+// Remove trailing slash if present to ensure proper URL construction
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
+  ? import.meta.env.VITE_API_BASE_URL.replace(/\/$/, '')
+  : '/api';
 
 class ApiClient {
   private getToken: (() => Promise<string | null>) | null = null;
@@ -100,13 +103,26 @@ class ApiClient {
 
   // WebSocket URL for voice
   getVoiceWebSocketUrl(token: string): string {
-    // WebSocket uses /agent path which is proxied separately from /api
-    // In development, connect via the Vite dev server's WebSocket proxy
-    // In production, use the same host or a configured WebSocket URL
-    const wsBase = import.meta.env.VITE_WS_BASE_URL
-      ? import.meta.env.VITE_WS_BASE_URL
-      : `ws://${window.location.host}`;
-    return `${wsBase}/agent/voice?token=${encodeURIComponent(token)}`;
+    // Use configured WebSocket base URL if provided
+    if (import.meta.env.VITE_WS_BASE_URL) {
+      const wsBase = import.meta.env.VITE_WS_BASE_URL;
+      // Ensure the URL doesn't end with a slash
+      const baseUrl = wsBase.endsWith('/') ? wsBase.slice(0, -1) : wsBase;
+      return `${baseUrl}/agent/voice?token=${encodeURIComponent(token)}`;
+    }
+    
+    // Fallback: derive from API base URL or current host
+    if (import.meta.env.VITE_API_BASE_URL) {
+      const apiUrl = import.meta.env.VITE_API_BASE_URL;
+      // Convert http:// to ws:// and https:// to wss://
+      const wsUrl = apiUrl.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
+      const baseUrl = wsUrl.endsWith('/') ? wsUrl.slice(0, -1) : wsUrl;
+      return `${baseUrl}/agent/voice?token=${encodeURIComponent(token)}`;
+    }
+    
+    // Last resort: use current host with ws://
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}/agent/voice?token=${encodeURIComponent(token)}`;
   }
 }
 

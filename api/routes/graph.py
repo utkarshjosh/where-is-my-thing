@@ -99,6 +99,11 @@ async def get_graph(
     """
     user_id = _get_user_id(current_user)
     
+    # Debug logging
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"Graph API: clerk_user_id={current_user.clerk_user_id}, resolved user_id={user_id}")
+    
     nodes: list[GraphNode] = []
     edges: list[GraphEdge] = []
     seen_nodes: set[str] = set()
@@ -114,6 +119,8 @@ async def get_graph(
                 user_id=user_id
             )
             thing_records = list(things_result)
+            
+            logger.info(f"Graph API: Found {len(thing_records)} things for user_id={user_id}")
             
             # If no things exist for this user, return empty graph
             if not thing_records:

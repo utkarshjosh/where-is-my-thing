@@ -46,11 +46,19 @@ Create a `.env` file based on `.env.example`:
 cp .env.example .env
 ```
 
-Add your Clerk publishable key:
+Add your configuration:
 
 ```
 VITE_CLERK_PUBLISHABLE_KEY=pk_test_your_key_here
+VITE_API_BASE_URL=https://things-api.utkarshjoshi.com
+VITE_WS_BASE_URL=wss://things-api.utkarshjoshi.com
+```
+
+For local development:
+```
+VITE_CLERK_PUBLISHABLE_KEY=pk_test_your_key_here
 VITE_API_BASE_URL=http://localhost:5000
+# VITE_WS_BASE_URL can be omitted for local dev (will use ws://localhost:5000)
 ```
 
 ### Development
