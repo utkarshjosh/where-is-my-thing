@@ -99,6 +99,74 @@ class MemoryService:
                 profile_text=profile_text
             )
     
+    def embed_canonical(self, canonical_id: str, embedding_text: str) -> None:
+        """Generate and store embedding for a canonical item.
+        
+        Args:
+            canonical_id: The canonical item's unique ID
+            embedding_text: Text to embed (canonical name + aliases)
+        """
+        result = self._embedder.embed_text(embedding_text)
+        
+        with self._driver.session() as session:
+            session.run("""
+                MATCH (c:CanonicalItem {id: $canonical_id})
+                SET c.embedding = $embedding,
+                    c.embedding_model = $model,
+                    c.embedding_version = $version,
+                    c.embedding_text = $embedding_text
+            """, 
+                canonical_id=canonical_id, 
+                embedding=result.vector,
+                model=result.model,
+                version=result.version,
+                embedding_text=embedding_text
+            )
+    
+    def canonical_similarity_search(
+        self, 
+        query: str, 
+        user_id: str, 
+        limit: int = 5,
+        min_score: float = 0.5
+    ) -> list[dict]:
+        """Search for similar canonical items by embedding similarity.
+        
+        Args:
+            query: Search term (normalized item name)
+            user_id: User ID for scoping
+            limit: Maximum results
+            min_score: Minimum similarity threshold
+            
+        Returns:
+            List of matching canonicals with scores
+        """
+        result = self._embedder.embed_query(query)
+        
+        with self._driver.session() as session:
+            records = session.run("""
+                CALL db.index.vector.queryNodes(
+                    'canonical_embedding', $limit_extra, $embedding
+                ) YIELD node, score
+                WHERE score > $min_score AND node.user_id = $user_id
+                RETURN node.id as id,
+                       node.canonical_name as canonical_name,
+                       node.item_type as item_type,
+                       node.aliases as aliases,
+                       node.confidence as confidence,
+                       score
+                ORDER BY score DESC
+                LIMIT $limit
+            """, 
+                limit_extra=limit * 2,
+                limit=limit, 
+                embedding=result.vector, 
+                user_id=user_id, 
+                min_score=min_score
+            )
+            
+            return [dict(r) for r in records]
+    
     def semantic_search(self, query: str, user_id: str = None, limit: int = 10, min_score: float = 0.55) -> list[dict]:
         """Fuzzy semantic search - for 'vibes' and similar descriptions.
         

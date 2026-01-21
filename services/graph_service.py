@@ -193,17 +193,67 @@ class GraphService:
         thing_name: str,
         location: str,
         description: Optional[str] = None,
-        tags: Optional[list[str]] = None
+        tags: Optional[list[str]] = None,
+        canonical_id: Optional[str] = None,
+        skip_canonical_check: bool = False
     ) -> dict:
         """Store a new thing at the specified location.
         
         Creates the thing node, location hierarchy, and LOCATED_IN relationship.
-        Also creates OWNS relationship to the user.
+        Also creates OWNS relationship to the user and links to canonical item.
+        
+        Canonical Resolution Flow:
+        1. If canonical_id provided, use that canonical (user confirmed)
+        2. Otherwise, resolve utterance to canonical
+        3. If similar canonical found (0.65-0.85), return needs_clarification
+        4. If very similar (>0.85) or no match, proceed with create/reuse
+        
+        Args:
+            thing_name: The name of the thing
+            location: Location path (e.g., "Bedroom > Closet > Top Shelf")
+            description: Optional description
+            tags: Optional list of tags
+            canonical_id: Optional pre-resolved canonical ID (for confirmation flow)
+            skip_canonical_check: Skip canonical resolution (for exact-name updates)
         """
         tags = tags or []
         
-        # Check if thing already exists FOR THIS USER
-        matches = self.find_thing_by_name(thing_name)
+        # Step 1: Canonical Resolution (unless skipped or pre-provided)
+        resolved_canonical_id = canonical_id
+        canonical_name = thing_name  # Default to thing_name
+        
+        if not skip_canonical_check and not canonical_id:
+            from services.canonical_service import CanonicalService
+            with CanonicalService(self.user_id) as cs:
+                resolution = cs.resolve_or_create(thing_name)
+                
+                if resolution["action"] == "clarify":
+                    # Need user clarification - return early
+                    return {
+                        "status": "needs_clarification",
+                        "message": resolution["message"],
+                        "candidates": resolution["candidates"],
+                        "normalized_name": resolution["normalized_name"],
+                        "item_type": resolution.get("item_type"),
+                        "original_utterance": thing_name,
+                        "location": location,
+                        "description": description,
+                        "tags": tags
+                    }
+                
+                # Got a canonical (either reused or created)
+                resolved_canonical_id = resolution["canonical_id"]
+                canonical_name = resolution["canonical_name"]
+        
+        # Step 2: Check if thing already exists FOR THIS USER
+        # Use canonical_name for matching if we have it, otherwise thing_name
+        search_name = canonical_name if resolved_canonical_id else thing_name
+        matches = self.find_thing_by_name(search_name)
+        
+        # Also check by original thing_name if different
+        if search_name != thing_name:
+            matches.extend([m for m in self.find_thing_by_name(thing_name) 
+                          if m["id"] not in {match["id"] for match in matches}])
         
         if len(matches) > 1:
             return {
@@ -228,23 +278,28 @@ class GraphService:
                         params["tags"] = tags
                     session.run(query, **params)
             
+            # Ensure canonical link exists
+            if resolved_canonical_id:
+                self._link_thing_to_canonical(existing["id"], resolved_canonical_id)
+            
             # Update location
-            result = self.move_thing(thing_name, location)
+            result = self.move_thing(existing["name"], location)
             
             # Mark as updated if metadata changed
             if result.get("action") == "no_change" and (description is not None or tags is not None):
                 result["action"] = "updated"
-                result["message"] = f"Updated metadata for '{thing_name}'"
+                result["message"] = f"Updated metadata for '{existing['name']}'"
             
             return result
         
-        # Create location hierarchy
+        # Step 3: Create location hierarchy
         leaf_place = self.create_location_hierarchy(location)
         
-        # Create thing with user_id
+        # Step 4: Create thing with user_id
+        # Use canonical_name for the thing name (normalized)
         thing = Thing(
             user_id=self.user_id,
-            name=thing_name.strip(),
+            name=canonical_name,
             description=description,
             tags=tags
         )
@@ -298,6 +353,10 @@ class GraphService:
                 thing_id=thing.id
             )
         
+        # Step 5: Link to canonical
+        if resolved_canonical_id:
+            self._link_thing_to_canonical(thing.id, resolved_canonical_id)
+        
         location_path = self.get_location_path(thing.id)
         
         # Embed the thing for semantic search
@@ -320,9 +379,90 @@ class GraphService:
             "action": "created",
             "thing_id": thing.id,
             "thing_name": thing.name,
+            "canonical_id": resolved_canonical_id,
             "location_path": location_path,
             "message": f"Stored new item '{thing.name}' in {location_path}"
         }
+    
+    def _link_thing_to_canonical(self, thing_id: str, canonical_id: str) -> None:
+        """Create CANONICAL relationship from Thing to CanonicalItem."""
+        with self._driver.session() as session:
+            session.run(
+                """
+                MATCH (t:Thing {id: $thing_id, user_id: $user_id})
+                MATCH (c:CanonicalItem {id: $canonical_id, user_id: $user_id})
+                MERGE (t)-[:CANONICAL]->(c)
+                """,
+                thing_id=thing_id,
+                canonical_id=canonical_id,
+                user_id=self.user_id
+            )
+    
+    def remember_thing_confirmed(
+        self,
+        thing_name: str,
+        location: str,
+        canonical_id: str,
+        description: Optional[str] = None,
+        tags: Optional[list[str]] = None
+    ) -> dict:
+        """Store a thing after user confirmed the canonical match.
+        
+        Called when user confirms during clarification flow.
+        Boosts confidence of the canonical.
+        
+        Args:
+            thing_name: Original thing name
+            location: Location path
+            canonical_id: Confirmed canonical ID
+            description: Optional description
+            tags: Optional tags
+        """
+        # Boost confidence for the confirmed canonical
+        from services.canonical_service import CanonicalService
+        with CanonicalService(self.user_id) as cs:
+            cs.confirm_match(canonical_id, thing_name)
+        
+        # Create thing with the canonical
+        return self.remember_thing(
+            thing_name=thing_name,
+            location=location,
+            description=description,
+            tags=tags,
+            canonical_id=canonical_id
+        )
+    
+    def remember_thing_new(
+        self,
+        thing_name: str,
+        location: str,
+        description: Optional[str] = None,
+        tags: Optional[list[str]] = None
+    ) -> dict:
+        """Store a thing as explicitly new (user rejected match).
+        
+        Called when user says the suggested match is different.
+        Creates a new canonical with higher initial confidence.
+        
+        Args:
+            thing_name: Original thing name
+            location: Location path
+            description: Optional description
+            tags: Optional tags
+        """
+        from services.canonical_service import CanonicalService
+        with CanonicalService(self.user_id) as cs:
+            result = cs.reject_match_and_create(thing_name)
+            canonical_id = result["canonical_id"]
+        
+        # Create thing with the new canonical
+        return self.remember_thing(
+            thing_name=thing_name,
+            location=location,
+            description=description,
+            tags=tags,
+            canonical_id=canonical_id
+        )
     
     def find_thing_by_name(self, name: str) -> list[dict]:
         """Find things by exact or fuzzy name match (user-scoped).

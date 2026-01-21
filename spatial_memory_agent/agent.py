@@ -45,6 +45,10 @@ def remember_thing(
 ) -> dict:
     """Store thing at location. Use when user says where they put something.
     
+    IMPORTANT: This tool may return needs_clarification if a similar item exists.
+    When that happens, ask the user if it's the same item, then use confirm_item_match
+    or create_new_item based on their response.
+    
     Args:
         thing_name: Thing name
         location: Path with > separator (e.g., "Bedroom > Locker > Blue File")
@@ -61,6 +65,21 @@ def remember_thing(
             tags=tag_list
         )
     
+    if result.get("status") == "needs_clarification":
+        # Return clarification request with candidates
+        candidates = result.get("candidates", [])
+        return {
+            "ok": False,
+            "needs_clarification": True,
+            "message": result.get("message"),
+            "candidates": [{"id": c["id"], "name": c["name"]} for c in candidates],
+            "original_utterance": result.get("original_utterance"),
+            "normalized_name": result.get("normalized_name"),
+            "pending_location": location,
+            "pending_description": description,
+            "pending_tags": tags
+        }
+    
     if result.get("status") == "error":
         return {"ok": False, "error": result.get("message"), "matches": result.get("matches")}
         
@@ -70,6 +89,87 @@ def remember_thing(
         "action": result.get("action"),
         "name": result.get("thing_name"), 
         "path": result.get("location_path") or result.get("new_location") or result.get("location"),
+        "message": result.get("message")
+    }
+
+
+def confirm_item_match(
+    canonical_id: str,
+    thing_name: str,
+    location: str,
+    description: str = None,
+    tags: str = None
+) -> dict:
+    """Confirm that the user's item matches an existing canonical item.
+    
+    Use this when the user confirms that their item is the same as a suggested match.
+    This links the new Thing to the existing canonical and boosts confidence.
+    
+    Args:
+        canonical_id: ID of the confirmed canonical item (from remember_thing candidates)
+        thing_name: Original thing name from user
+        location: Path with > separator (e.g., "Bedroom > Locker > Blue File")
+        description: Optional description
+        tags: Optional comma-separated tags
+    """
+    tag_list = [t.strip() for t in tags.split(",")] if tags else []
+    
+    with _get_graph_service() as gs:
+        result = gs.remember_thing_confirmed(
+            thing_name=thing_name,
+            location=location,
+            canonical_id=canonical_id,
+            description=description,
+            tags=tag_list
+        )
+    
+    if result.get("status") == "error":
+        return {"ok": False, "error": result.get("message")}
+    
+    return {
+        "ok": True,
+        "action": "confirmed_match",
+        "name": result.get("thing_name"),
+        "path": result.get("location_path"),
+        "message": result.get("message")
+    }
+
+
+def create_new_item(
+    thing_name: str,
+    location: str,
+    description: str = None,
+    tags: str = None
+) -> dict:
+    """Create a new item when user says it's different from suggested matches.
+    
+    Use this when the user explicitly says their item is NOT the same as suggested.
+    This creates a new canonical item with higher initial confidence.
+    
+    Args:
+        thing_name: Thing name from user
+        location: Path with > separator (e.g., "Bedroom > Locker > Blue File")
+        description: Optional description
+        tags: Optional comma-separated tags
+    """
+    tag_list = [t.strip() for t in tags.split(",")] if tags else []
+    
+    with _get_graph_service() as gs:
+        result = gs.remember_thing_new(
+            thing_name=thing_name,
+            location=location,
+            description=description,
+            tags=tag_list
+        )
+    
+    if result.get("status") == "error":
+        return {"ok": False, "error": result.get("message")}
+    
+    return {
+        "ok": True,
+        "action": "created_new",
+        "name": result.get("thing_name"),
+        "path": result.get("location_path"),
         "message": result.get("message")
     }
 
@@ -187,8 +287,26 @@ def attach_intent(thing_name: str, intent: str, description: str = None) -> dict
 
 AGENT_INSTRUCTION = """Spatial memory assistant. Track where users keep things.
 
-Tools: remember_thing, find_thing, move_thing, associate_things, list_contents, list_places, attach_intent.
+Tools: remember_thing, find_thing, move_thing, associate_things, list_contents, list_places, attach_intent, confirm_item_match, create_new_item.
 Location format: "Room > Zone > Container" (e.g., "Bedroom > Closet > Top Shelf").
+
+🔑 CRITICAL: CANONICAL ITEM RESOLUTION
+The system uses canonical item matching to prevent duplicates. When you call `remember_thing`:
+
+1. If `needs_clarification: true` is returned, you MUST ask the user if their item is the same as the suggested match.
+   - Present the match naturally: "I noticed you already have something called [candidate name]. Is [user's item] the same thing?"
+   - The response includes `candidates` with id and name of potential matches.
+
+2. Based on user's response:
+   - If YES (same item): Call `confirm_item_match` with the canonical_id, original thing_name, and location
+   - If NO (different item): Call `create_new_item` with the thing_name and location
+
+3. NEVER assume - always ask when `needs_clarification` is true.
+
+Examples of when clarification is needed:
+- "Crime and Punishment book" when "crime and punishment" already exists
+- "blue pen" when "pen" already exists
+- "my laptop charger" when "laptop charger" already exists
 
 🔑 CRITICAL: STATE-AWARENESS
 The `remember_thing` and `move_thing` tools are state-aware and will detect if an item already exists or if a movement is redundant.
@@ -233,5 +351,7 @@ root_agent = Agent(
         list_contents,
         list_places,
         attach_intent,
+        confirm_item_match,
+        create_new_item,
     ],
 )
