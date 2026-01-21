@@ -40,6 +40,7 @@ class VoiceWebSocketManager {
   private maxReconnectDelay = 30000; // Max 30 seconds
   private isIntentionallyClosed = false;
   private getTokenFn: (() => Promise<string | null>) | null = null;
+  private connectingPromise: Promise<void> | null = null;
 
   private constructor() {}
 
@@ -84,14 +85,38 @@ class VoiceWebSocketManager {
   }
 
   async connect(): Promise<void> {
+    // If already connected, return immediately
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.notifySubscribers('onConnect');
       return;
     }
 
+    // If already connecting, wait for the existing connection attempt
+    if (this.connectingPromise) {
+      return this.connectingPromise;
+    }
+
+    // If there's a connecting socket, wait for it
     if (this.ws?.readyState === WebSocket.CONNECTING) {
-      // Already connecting, wait for it
-      return;
+      return new Promise<void>((resolve, reject) => {
+        const checkInterval = setInterval(() => {
+          if (this.ws?.readyState === WebSocket.OPEN) {
+            clearInterval(checkInterval);
+            this.notifySubscribers('onConnect');
+            resolve();
+          } else if (this.ws?.readyState === WebSocket.CLOSED) {
+            clearInterval(checkInterval);
+            // Connection failed, will retry
+            reject(new Error('Connection failed'));
+          }
+        }, 100);
+
+        // Timeout after 5 seconds
+        setTimeout(() => {
+          clearInterval(checkInterval);
+          reject(new Error('Connection timeout'));
+        }, 5000);
+      });
     }
 
     if (!this.getTokenFn) {
@@ -101,55 +126,65 @@ class VoiceWebSocketManager {
     this.isIntentionallyClosed = false;
     this.clearReconnectTimeout();
 
-    try {
-      const token = await this.getTokenFn();
-      if (!token) {
-        throw new Error('Not authenticated');
-      }
+    // Create a promise that tracks this connection attempt
+    this.connectingPromise = (async () => {
+      try {
+        const token = await this.getTokenFn();
+        if (!token) {
+          throw new Error('Not authenticated');
+        }
 
-      const wsUrl = apiClient.getVoiceWebSocketUrl(token);
-      const ws = new WebSocket(wsUrl);
+        const wsUrl = apiClient.getVoiceWebSocketUrl(token);
+        const ws = new WebSocket(wsUrl);
 
-      ws.onopen = () => {
-        console.log('Voice WebSocket connected');
+        // Set ws immediately to prevent concurrent connection attempts
         this.ws = ws;
-        this.reconnectAttempts = 0;
-        this.notifySubscribers('onConnect');
-      };
 
-      ws.onmessage = async (event) => {
-        try {
-          const message: WebSocketMessage = JSON.parse(event.data);
-          this.notifyMessage(message);
-        } catch (e) {
-          console.error('Error parsing WebSocket message:', e);
-        }
-      };
+        ws.onopen = () => {
+          console.log('Voice WebSocket connected');
+          this.reconnectAttempts = 0;
+          this.connectingPromise = null;
+          this.notifySubscribers('onConnect');
+        };
 
-      ws.onerror = (event) => {
-        console.error('WebSocket error:', event);
-        const error = new Error('WebSocket connection error');
-        this.notifySubscribers('onError', error);
-        // Don't reconnect immediately on error, let onclose handle it
-      };
+        ws.onmessage = async (event) => {
+          try {
+            const message: WebSocketMessage = JSON.parse(event.data);
+            this.notifyMessage(message);
+          } catch (e) {
+            console.error('Error parsing WebSocket message:', e);
+          }
+        };
 
-      ws.onclose = () => {
-        console.log('Voice WebSocket closed');
+        ws.onerror = (event) => {
+          console.error('WebSocket error:', event);
+          const error = new Error('WebSocket connection error');
+          this.notifySubscribers('onError', error);
+          // Don't reconnect immediately on error, let onclose handle it
+        };
+
+        ws.onclose = () => {
+          console.log('Voice WebSocket closed');
+          this.ws = null;
+          this.connectingPromise = null;
+          this.notifySubscribers('onDisconnect');
+
+          // Reconnect if not intentionally closed and we have subscribers
+          if (!this.isIntentionallyClosed && this.subscribers.size > 0) {
+            this.scheduleReconnect();
+          }
+        };
+      } catch (error) {
         this.ws = null;
-        this.notifySubscribers('onDisconnect');
+        this.connectingPromise = null;
+        const err = error instanceof Error ? error : new Error('Failed to connect');
+        this.notifySubscribers('onError', err);
+        this.scheduleReconnect();
+        throw err;
+      }
+    })();
 
-        // Reconnect if not intentionally closed and we have subscribers
-        if (!this.isIntentionallyClosed && this.subscribers.size > 0) {
-          this.scheduleReconnect();
-        }
-      };
-
-      this.ws = ws;
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error('Failed to connect');
-      this.notifySubscribers('onError', err);
-      this.scheduleReconnect();
-    }
+    return this.connectingPromise;
   }
 
   private scheduleReconnect() {
@@ -244,6 +279,72 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
 
   // Track connection state from manager
   const [managerConnected, setManagerConnected] = useState(false);
+
+  // Initialize audio context
+  const initAudioContext = useCallback(() => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new AudioContext();
+    }
+    return audioContextRef.current;
+  }, []);
+
+  // Process queued audio
+  const processAudioQueue = useCallback(async (audioContext: AudioContext) => {
+    if (isPlayingRef.current || audioQueueRef.current.length === 0) {
+      return;
+    }
+
+    isPlayingRef.current = true;
+    const arrayBuffer = audioQueueRef.current.shift();
+
+    if (arrayBuffer) {
+      try {
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.playbackRate.value = 1.25; // Speed up playback slightly
+        source.connect(audioContext.destination);
+
+        source.onended = () => {
+          isPlayingRef.current = false;
+          processAudioQueue(audioContext);
+        };
+
+        source.start();
+      } catch (e) {
+        console.error('Error decoding audio:', e);
+        isPlayingRef.current = false;
+        processAudioQueue(audioContext);
+      }
+    }
+  }, []);
+
+  // Play audio from base64
+  const playAudio = useCallback(async (base64Audio: string) => {
+    try {
+      const audioContext = initAudioContext();
+
+      // Decode base64 to ArrayBuffer
+      const binaryString = atob(base64Audio);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      const arrayBuffer = bytes.buffer;
+
+      // Queue the audio
+      audioQueueRef.current.push(arrayBuffer);
+      processAudioQueue(audioContext);
+    } catch (e) {
+      console.error('Error playing audio:', e);
+    }
+  }, [initAudioContext, processAudioQueue]);
+
+  // Stop audio playback
+  const stopAudioPlayback = useCallback(() => {
+    audioQueueRef.current = [];
+    isPlayingRef.current = false;
+  }, []);
 
   // Initialize WebSocket manager singleton
   useEffect(() => {
@@ -346,72 +447,6 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
     };
   }, [getToken, addTranscript, addToolCall, addToolResult, setVoiceState, setConnected, setError, playAudio, stopAudioPlayback]);
 
-  // Initialize audio context
-  const initAudioContext = useCallback(() => {
-    if (!audioContextRef.current) {
-      audioContextRef.current = new AudioContext();
-    }
-    return audioContextRef.current;
-  }, []);
-
-  // Process queued audio
-  const processAudioQueue = useCallback(async (audioContext: AudioContext) => {
-    if (isPlayingRef.current || audioQueueRef.current.length === 0) {
-      return;
-    }
-
-    isPlayingRef.current = true;
-    const arrayBuffer = audioQueueRef.current.shift();
-
-    if (arrayBuffer) {
-      try {
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
-        const source = audioContext.createBufferSource();
-        source.buffer = audioBuffer;
-        source.playbackRate.value = 1.25; // Speed up playback slightly
-        source.connect(audioContext.destination);
-
-        source.onended = () => {
-          isPlayingRef.current = false;
-          processAudioQueue(audioContext);
-        };
-
-        source.start();
-      } catch (e) {
-        console.error('Error decoding audio:', e);
-        isPlayingRef.current = false;
-        processAudioQueue(audioContext);
-      }
-    }
-  }, []);
-
-  // Play audio from base64
-  const playAudio = useCallback(async (base64Audio: string) => {
-    try {
-      const audioContext = initAudioContext();
-
-      // Decode base64 to ArrayBuffer
-      const binaryString = atob(base64Audio);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      const arrayBuffer = bytes.buffer;
-
-      // Queue the audio
-      audioQueueRef.current.push(arrayBuffer);
-      processAudioQueue(audioContext);
-    } catch (e) {
-      console.error('Error playing audio:', e);
-    }
-  }, [initAudioContext, processAudioQueue]);
-
-  // Stop audio playback
-  const stopAudioPlayback = useCallback(() => {
-    audioQueueRef.current = [];
-    isPlayingRef.current = false;
-  }, []);
-
   // Connect to WebSocket via singleton manager
   const connect = useCallback(async () => {
     const manager = wsManagerRef.current;
@@ -419,7 +454,13 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
       return;
     }
 
+    // If already connected, return immediately
     if (manager.isConnected) {
+      return;
+    }
+
+    // If already connecting, return immediately (don't call connect again)
+    if (manager.readyState === WebSocket.CONNECTING) {
       return;
     }
 
@@ -603,9 +644,26 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
 
   // Auto-connect on mount if option is set
   useEffect(() => {
-    if (options.autoConnect) {
-      connect();
+    if (!options.autoConnect) {
+      return;
     }
+
+    let mounted = true;
+    let timeoutId: number | null = null;
+
+    // Small delay to prevent double connection in React StrictMode
+    timeoutId = window.setTimeout(() => {
+      if (mounted) {
+        connect();
+      }
+    }, 0);
+
+    return () => {
+      mounted = false;
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+    };
     // Cleanup is handled by the manager subscription unsubscribe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options.autoConnect]); // Only depend on autoConnect

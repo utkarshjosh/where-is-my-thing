@@ -24,6 +24,8 @@ from google.genai import types
 
 from spatial_memory_agent.agent import root_agent
 from services.groq_service import get_groq_service
+from services.user_service import UserService
+from services.cache_service import get_user_id_cache
 from config import get_settings
 
 # Set up logger
@@ -93,6 +95,39 @@ async def verify_websocket_token(token: str) -> Optional[dict]:
     except Exception as e:
         logger.error(f"WebSocket auth error: {e}")
         return None
+
+
+def _resolve_user_id(clerk_user_id: str, email: str = None) -> str:
+    """Resolve Clerk user ID to internal user ID.
+    
+    Uses caching to avoid Neo4j lookup on every request.
+    Creates user if not exists.
+    
+    Args:
+        clerk_user_id: The Clerk user ID (from JWT 'sub' claim)
+        email: Optional email from JWT
+        
+    Returns:
+        Internal user UUID
+    """
+    cache = get_user_id_cache()
+    
+    # Check cache first
+    cache_key = f"user:{clerk_user_id}"
+    cached_id = cache.get(cache_key)
+    if cached_id:
+        return cached_id
+    
+    # Cache miss - query Neo4j
+    with UserService() as us:
+        user = us.find_or_create_user(
+            clerk_user_id=clerk_user_id,
+            email=email,
+        )
+    
+    # Cache the result
+    cache.set(cache_key, user.id)
+    return user.id
 
 
 def detect_audio_format(audio_data: bytes) -> str:
@@ -258,7 +293,11 @@ async def voice_agent_websocket(
         await websocket.close(code=4001, reason="Invalid or expired token")
         return
     
-    user_id = user_claims.get("sub", "anonymous")
+    # CRITICAL: Resolve clerk_user_id to internal user_id
+    # The agent tools expect internal user_id, not clerk_user_id
+    clerk_user_id = user_claims.get("sub", "anonymous")
+    email = user_claims.get("email")
+    user_id = _resolve_user_id(clerk_user_id, email)
     
     # Accept the WebSocket connection
     await websocket.accept()

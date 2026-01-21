@@ -7,6 +7,30 @@
     <meta name="description" content="Spatial Memory - Remember where you put things" />
     <meta name="theme-color" content="#0f0f0f" />
     <title>Spatial Memory</title>
+    <script>
+      // Clear any existing service workers on page load
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(registrations) {
+          for (let registration of registrations) {
+            registration.unregister();
+          }
+        });
+      }
+      // Suppress errors for virtual modules that don't exist
+      window.addEventListener('error', function(e) {
+        if (
+          e.message && (
+            e.message.includes('vue-devtools') ||
+            e.message.includes('vue-inspector') ||
+            e.message.includes('vite-plugin-pwa') ||
+            e.message.includes('manifest.webmanifest')
+          )
+        ) {
+          e.preventDefault();
+          return true;
+        }
+      }, true);
+    </script>
   </head>
   <body>
     <div id="root"></div>

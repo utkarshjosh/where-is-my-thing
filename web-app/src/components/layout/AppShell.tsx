@@ -204,35 +204,40 @@ export function AppShell({ children }: AppShellProps) {
 
       <MantineAppShell.Navbar p="md">
         <Stack gap="xs">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.path}
-              component={Link}
-              to={item.path}
-              label={item.label}
-              leftSection={<item.icon size={20} />}
-              active={location.pathname === item.path}
-              onClick={() => isMobile && close()}
-              styles={{
-                root: {
-                  borderRadius: rem(8),
-                  '&[data-active]': {
-                    backgroundColor: 'rgba(245, 158, 11, 0.15)',
-                    color: '#f59e0b',
-                    '&:hover': {
-                      backgroundColor: 'rgba(245, 158, 11, 0.2)',
-                    },
+          {navItems.map((item) => {
+            const isActive = location.pathname === item.path;
+            return (
+              <NavLink
+                key={item.path}
+                component={Link}
+                to={item.path}
+                label={item.label}
+                leftSection={<item.icon size={20} />}
+                active={isActive}
+                onClick={() => isMobile && close()}
+                styles={(theme) => ({
+                  root: {
+                    borderRadius: rem(8),
+                    ...(isActive && {
+                      backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                      color: '#f59e0b',
+                      '&:hover': {
+                        backgroundColor: 'rgba(245, 158, 11, 0.2)',
+                      },
+                    }),
+                    ...(!isActive && {
+                      '&:hover': {
+                        backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                      },
+                    }),
                   },
-                  '&:hover': {
-                    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                  label: {
+                    fontWeight: 500,
                   },
-                },
-                label: {
-                  fontWeight: 500,
-                },
-              }}
-            />
-          ))}
+                })}
+              />
+            );
+          })}
 
           <Divider my="sm" color="rgba(255, 255, 255, 0.08)" />
 
@@ -297,30 +302,35 @@ export function AppShell({ children }: AppShellProps) {
           )}
 
           {/* Desktop: Profile link */}
-          {!isMobile && (
-            <NavLink
-              component={Link}
-              to="/profile"
-              label="Profile"
-              leftSection={<IconUser size={20} />}
-              active={location.pathname === '/profile'}
-              styles={{
-                root: {
-                  borderRadius: rem(8),
-                  '&[data-active]': {
-                    backgroundColor: 'rgba(245, 158, 11, 0.15)',
-                    color: '#f59e0b',
+          {!isMobile && (() => {
+            const isProfileActive = location.pathname === '/profile';
+            return (
+              <NavLink
+                component={Link}
+                to="/profile"
+                label="Profile"
+                leftSection={<IconUser size={20} />}
+                active={isProfileActive}
+                styles={(theme) => ({
+                  root: {
+                    borderRadius: rem(8),
+                    ...(isProfileActive && {
+                      backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                      color: '#f59e0b',
+                    }),
+                    ...(!isProfileActive && {
+                      '&:hover': {
+                        backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                      },
+                    }),
                   },
-                  '&:hover': {
-                    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                  label: {
+                    fontWeight: 500,
                   },
-                },
-                label: {
-                  fontWeight: 500,
-                },
-              }}
-            />
-          )}
+                })}
+              />
+            );
+          })()}
         </Stack>
       </MantineAppShell.Navbar>
 

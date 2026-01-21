@@ -109,7 +109,7 @@ class MemoryService:
         
         Args:
             query: Search term or phrase
-            user_id: If provided, only returns things owned by this user
+            user_id: REQUIRED for production - only returns things for this user
             limit: Maximum results to return
             min_score: Minimum similarity score threshold (0.0 to 1.0, default 0.55)
         
@@ -122,15 +122,14 @@ class MemoryService:
         
         with self._driver.session() as session:
             if user_id:
-                # User-scoped semantic search
+                # User-scoped semantic search using user_id property (more efficient)
                 records = session.run("""
                     CALL db.index.vector.queryNodes(
                         'thing_embedding', $limit_extra, $embedding
                     ) YIELD node, score
-                    WHERE score > $min_score
-                    MATCH (u:User {id: $user_id})-[:OWNS]->(node)
+                    WHERE score > $min_score AND node.user_id = $user_id
                     WITH node, score
-                    OPTIONAL MATCH (node)-[:LOCATED_IN]->(p:Place)
+                    OPTIONAL MATCH (node)-[:LOCATED_IN]->(p:Place {user_id: $user_id})
                     RETURN node.id as id, 
                            node.name as name, 
                            node.description as description,
@@ -141,7 +140,8 @@ class MemoryService:
                     LIMIT $limit
                 """, limit_extra=limit * 3, limit=limit, embedding=result.vector, user_id=user_id, min_score=min_score)
             else:
-                # Global search (no user filter)
+                # No user filter - only for testing/admin
+                # WARNING: In production, always provide user_id
                 records = session.run("""
                     CALL db.index.vector.queryNodes(
                         'thing_embedding', $limit, $embedding

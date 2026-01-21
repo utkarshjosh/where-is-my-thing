@@ -84,19 +84,17 @@ async def list_items(
     """List all items for the authenticated user.
     
     Returns all things stored in the user's spatial memory graph.
+    Uses user_id property for efficient filtering.
     """
     user_id = _get_user_id(current_user)
     
     with GraphService(user_id=user_id) as gs:
-        # Use find_thing with empty query to get all items
-        # We need direct Neo4j query for proper pagination
-        # Handle both cases: things with OWNS relationship and things without (backward compatibility)
         with gs._driver.session() as session:
-            # First try to get things with OWNS relationship
+            # Query using user_id property on Thing (more efficient than traversing OWNS)
             result = session.run(
                 """
-                MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
-                OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place)
+                MATCH (t:Thing {user_id: $user_id})
+                OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place {user_id: $user_id})
                 RETURN t, p, t.created_at AS created_at
                 ORDER BY created_at DESC
                 SKIP $offset LIMIT $limit
@@ -106,28 +104,8 @@ async def list_items(
                 limit=limit
             )
             
-            items_list = list(result)
-            
-            # If no items found with OWNS relationship, try getting all things (backward compatibility)
-            # This handles the case where old data doesn't have OWNS relationships
-            # Note: This is a fallback for backward compatibility - ideally all things should have OWNS relationships
-            if not items_list:
-                result = session.run(
-                    """
-                    MATCH (t:Thing)
-                    WHERE NOT EXISTS((:User)-[:OWNS]->(t))
-                    OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place)
-                    RETURN t, p, t.created_at AS created_at
-                    ORDER BY created_at DESC
-                    SKIP $offset LIMIT $limit
-                    """,
-                    offset=offset,
-                    limit=limit
-                )
-                items_list = list(result)
-            
             items = []
-            for record in items_list:
+            for record in result:
                 node = record["t"]
                 place = record["p"]
                 
@@ -193,15 +171,17 @@ async def get_item(
     """Get a single item by ID.
     
     Returns details for a specific thing.
+    Uses user_id property for efficient access control.
     """
     user_id = _get_user_id(current_user)
     
     with GraphService(user_id=user_id) as gs:
         with gs._driver.session() as session:
+            # Use user_id property for filtering (more efficient)
             result = session.run(
                 """
-                MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing {id: $item_id})
-                OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place)
+                MATCH (t:Thing {id: $item_id, user_id: $user_id})
+                OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place {user_id: $user_id})
                 RETURN t, p
                 """,
                 user_id=user_id,

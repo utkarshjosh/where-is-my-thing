@@ -1,10 +1,12 @@
 """Core entity models for the spatial memory system.
 
-The system models 4 primitive concepts:
-- Thing: Physical object
-- Place: Location (physical or abstract)  
-- Intent: Purpose/reason (why it exists / when needed)
-- Event: Change over time
+The system models these core concepts:
+- Thing: Physical object being tracked (user-scoped)
+- Place: Location - room, zone, container (user-scoped)
+- Intent: Purpose/reason for keeping something
+- CanonicalItem: Canonical identity for deduplication (user-scoped)
+
+All entities with user_id are user-isolated.
 """
 from datetime import datetime
 from enum import Enum
@@ -25,15 +27,32 @@ class PlaceType(str, Enum):
     CONTAINER = "container"  # e.g., drawer, box, bag, shelf
 
 
+class ItemType(str, Enum):
+    """Types of items for canonical classification."""
+    BOOK = "book"
+    DOCUMENT = "document"
+    ELECTRONIC = "electronic"
+    CLOTHING = "clothing"
+    TOOL = "tool"
+    PERSONAL = "personal"  # wallet, glasses, keys
+    MISC = "misc"
+
+
 class Thing(BaseModel):
     """A physical object being tracked.
     
     Examples: passport, HDMI cable, screwdriver
+    
+    User Isolation:
+    - user_id property for fast filtering
+    - Also connected via (User)-[:OWNS]->(Thing)
     """
     id: str = Field(default_factory=generate_id)
+    user_id: str  # REQUIRED: Internal user UUID for isolation
     name: str
     description: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
+    item_type: Optional[ItemType] = None  # For canonical classification
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
     
@@ -49,8 +68,13 @@ class Place(BaseModel):
     - Room: "Living Room", "Bedroom"
     - Zone: "TV Unit", "Bedside"
     - Container: "Blue Box", "Top Drawer"
+    
+    User Isolation:
+    - Each user has their own places
+    - user_id property for filtering
     """
     id: str = Field(default_factory=generate_id)
+    user_id: str  # REQUIRED: Internal user UUID for isolation
     name: str
     place_type: PlaceType
     description: Optional[str] = None
@@ -71,16 +95,29 @@ class Intent(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
 
 
-class Event(BaseModel):
-    """A temporal record of change.
+class CanonicalItem(BaseModel):
+    """Canonical identity for object deduplication.
     
-    Tracks when things happen: moved, used, last seen.
+    Solves the "perception vs belief" problem:
+    - Multiple utterances may refer to the same object
+    - canonical_name is the best guess, not truth
+    - aliases grow over time as user refers to item differently
+    - confidence increases with repetition/confirmation
+    
+    Example:
+    - canonical_name: "Crime and Punishment"
+    - item_type: book
+    - aliases: ["crime punishment", "dostoevsky book", "that russian novel"]
+    - confidence: 0.71
     """
     id: str = Field(default_factory=generate_id)
-    event_type: str  # "moved", "used", "created", "updated"
-    timestamp: datetime = Field(default_factory=datetime.now)
-    notes: Optional[str] = None
+    user_id: str  # REQUIRED: User-scoped canonicals
+    canonical_name: str  # Best guess normalized name
+    item_type: Optional[ItemType] = None
+    aliases: list[str] = Field(default_factory=list)  # All known ways user refers to this
+    confidence: float = Field(default=0.5)  # 0.0-1.0, increases with confirmation
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
     
-    # For move events
-    from_place_id: Optional[str] = None
-    to_place_id: Optional[str] = None
+    # Metadata for similarity matching
+    embedding_text: Optional[str] = None

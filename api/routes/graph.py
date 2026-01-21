@@ -94,6 +94,8 @@ async def get_graph(
     
     Returns all nodes (things, places, intents) and edges (relationships)
     for the authenticated user's spatial memory graph.
+    
+    Uses user_id property for efficient filtering.
     """
     user_id = _get_user_id(current_user)
     
@@ -103,79 +105,17 @@ async def get_graph(
     
     with GraphService(user_id=user_id) as gs:
         with gs._driver.session() as session:
-            # Check if user exists first
-            user_exists = session.run(
-                """
-                MATCH (u:User {id: $user_id})
-                RETURN count(u) AS user_count
-                """,
-                user_id=user_id
-            )
-            if user_exists.single()["user_count"] == 0:
-                return GraphData(nodes=nodes, edges=edges)
-            
-            # Check if any Thing nodes exist at all (avoids relationship type warning)
-            # If no Things exist in the database, return early
-            thing_check = session.run(
-                """
-                MATCH (t:Thing)
-                RETURN count(t) AS thing_count
-                LIMIT 1
-                """,
-            )
-            if thing_check.single()["thing_count"] == 0:
-                return GraphData(nodes=nodes, edges=edges)
-            
-            # Get all things owned by user
-            # Query may warn if OWNS relationship type doesn't exist yet - that's okay
+            # Get all things for this user using user_id property (efficient)
             things_result = session.run(
                 """
-                MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
+                MATCH (t:Thing {user_id: $user_id})
                 RETURN t
                 """,
                 user_id=user_id
             )
             thing_records = list(things_result)
             
-            # Fallback: If no things found with OWNS relationship, check for all Things
-            # This handles backward compatibility for data created before OWNS relationships existed
-            if not thing_records:
-                # Get all Things (they might not have OWNS relationships yet)
-                all_things = session.run(
-                    """
-                    MATCH (t:Thing)
-                    RETURN t
-                    LIMIT 100
-                    """,
-                )
-                orphan_records = list(all_things)
-                
-                if orphan_records:
-                    # Backfill: Create OWNS relationships for all Things
-                    # This ensures all Things are associated with the current user
-                    for record in orphan_records:
-                        thing_node = record["t"]
-                        session.run(
-                            """
-                            MATCH (u:User {id: $user_id})
-                            MATCH (t:Thing {id: $thing_id})
-                            MERGE (u)-[:OWNS]->(t)
-                            """,
-                            user_id=user_id,
-                            thing_id=thing_node["id"]
-                        )
-                    
-                    # Now query again with OWNS relationships
-                    things_result = session.run(
-                        """
-                        MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
-                        RETURN t
-                        """,
-                        user_id=user_id
-                    )
-                    thing_records = list(things_result)
-            
-            # If still no things exist for this user, return empty graph early to avoid other queries
+            # If no things exist for this user, return empty graph
             if not thing_records:
                 return GraphData(nodes=nodes, edges=edges)
             
@@ -192,11 +132,11 @@ async def get_graph(
                         category=_infer_category(tags, "thing", node["name"]),
                     ))
             
-            # Get all places connected to user's things
+            # Get all places for this user
             places_result = session.run(
                 """
-                MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)-[:LOCATED_IN]->(p:Place)
-                OPTIONAL MATCH (p)<-[:CONTAINS*0..]-(ancestor:Place)
+                MATCH (p:Place {user_id: $user_id})
+                OPTIONAL MATCH (p)<-[:CONTAINS*0..]-(ancestor:Place {user_id: $user_id})
                 WITH p, ancestor
                 RETURN DISTINCT p, ancestor
                 """,
@@ -214,12 +154,10 @@ async def get_graph(
                             category="home",
                         ))
             
-            # Get all intents connected to user's things (only if things exist)
+            # Get all intents connected to user's things
             intents_result = session.run(
                 """
-                MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
-                OPTIONAL MATCH (t)-[:USED_FOR]->(i:Intent)
-                WHERE i IS NOT NULL
+                MATCH (t:Thing {user_id: $user_id})-[:USED_FOR]->(i:Intent)
                 RETURN DISTINCT i
                 """,
                 user_id=user_id
@@ -240,7 +178,7 @@ async def get_graph(
             # LOCATED_IN edges
             located_result = session.run(
                 """
-                MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)-[r:LOCATED_IN]->(p:Place)
+                MATCH (t:Thing {user_id: $user_id})-[r:LOCATED_IN]->(p:Place {user_id: $user_id})
                 RETURN t.id AS source, p.id AS target, type(r) AS rel_type
                 """,
                 user_id=user_id
@@ -260,13 +198,10 @@ async def get_graph(
             if any(n.type == "place" for n in nodes):
                 contains_result = session.run(
                     """
-                    MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)-[:LOCATED_IN]->(p:Place)
-                    MATCH (parent:Place)-[r:CONTAINS]->(child:Place)
-                    WHERE parent.id IN $place_ids OR child.id IN $place_ids
+                    MATCH (parent:Place {user_id: $user_id})-[r:CONTAINS]->(child:Place {user_id: $user_id})
                     RETURN DISTINCT parent.id AS source, child.id AS target, type(r) AS rel_type
                     """,
-                    user_id=user_id,
-                    place_ids=[nid for nid in seen_nodes]
+                    user_id=user_id
                 )
                 for record in contains_result:
                     source = record.get("source")
@@ -279,11 +214,10 @@ async def get_graph(
                             type=rel_type,
                         ))
             
-            # RELATED_TO edges (thing associations) - only if we have things
+            # RELATED_TO edges (thing associations)
             related_result = session.run(
                 """
-                MATCH (u:User {id: $user_id})-[:OWNS]->(t1:Thing)
-                MATCH (t1)-[r:RELATED_TO]->(t2:Thing)<-[:OWNS]-(u)
+                MATCH (t1:Thing {user_id: $user_id})-[r:RELATED_TO]->(t2:Thing {user_id: $user_id})
                 RETURN t1.id AS source, t2.id AS target, type(r) AS rel_type
                 """,
                 user_id=user_id
@@ -299,11 +233,10 @@ async def get_graph(
                         type=rel_type,
                     ))
             
-            # USED_FOR edges (thing to intent) - only if we have things
+            # USED_FOR edges (thing to intent)
             used_for_result = session.run(
                 """
-                MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
-                MATCH (t)-[r:USED_FOR]->(i:Intent)
+                MATCH (t:Thing {user_id: $user_id})-[r:USED_FOR]->(i:Intent)
                 RETURN t.id AS source, i.id AS target, type(r) AS rel_type
                 """,
                 user_id=user_id

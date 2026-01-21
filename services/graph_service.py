@@ -2,15 +2,23 @@
 
 Provides cognitive operations over the spatial memory graph:
 - remember_thing: Create thing + place hierarchy
-- move_thing: Update location, create event
+- move_thing: Update location
 - find_thing: Query by name/description/tags
 - associate_things: Create RELATED_TO edges
 - get_location_path: Traverse to root
+
+CRITICAL: User Isolation
+========================
+All operations are user-scoped. The user_id parameter is REQUIRED.
+- Things have user_id property + OWNS relationship from User
+- Places have user_id property (each user has their own places)
+- All queries filter by user_id
+
+Never call methods without a valid user_id - this would leak data between users.
 """
-from datetime import datetime
 from typing import Optional
 from neo4j import GraphDatabase, Driver
-from models import Thing, Place, Intent, Event, PlaceType, NodeLabel, RelationType
+from models import Thing, Place, PlaceType, NodeLabel, RelationType
 from config import get_settings
 
 
@@ -21,14 +29,19 @@ class GraphService:
     This ensures per-user data isolation - users can only access their own things.
     """
     
-    def __init__(self, user_id: Optional[str] = None, driver: Optional[Driver] = None):
+    def __init__(self, user_id: str, driver: Optional[Driver] = None):
         """Initialize with user_id for data isolation and optional driver.
         
         Args:
-            user_id: The internal User ID for data isolation. Required for 
-                    most operations. If None, operations will fail on user-scoped data.
+            user_id: The internal User ID (UUID) for data isolation. REQUIRED.
             driver: Optional Neo4j driver. If not provided, uses shared pool.
+            
+        Raises:
+            ValueError: If user_id is not provided
         """
+        if not user_id:
+            raise ValueError("user_id is required for GraphService - cannot operate without user context")
+        
         self.user_id = user_id
         if driver:
             self._driver = driver
@@ -59,14 +72,15 @@ class GraphService:
         place_type: PlaceType,
         parent_id: Optional[str] = None
     ) -> Place:
-        """Find existing place by name or create new one."""
+        """Find existing place by name (user-scoped) or create new one."""
         with self._driver.session() as session:
-            # Try to find existing
+            # Try to find existing place FOR THIS USER
             result = session.run(
                 """
-                MATCH (p:Place {name: $name, place_type: $place_type})
+                MATCH (p:Place {user_id: $user_id, name: $name, place_type: $place_type})
                 RETURN p
                 """,
+                user_id=self.user_id,
                 name=name.strip(),
                 place_type=place_type.value
             )
@@ -76,18 +90,25 @@ class GraphService:
                 node = record["p"]
                 return Place(
                     id=node["id"],
+                    user_id=node["user_id"],
                     name=node["name"],
                     place_type=PlaceType(node["place_type"]),
                     description=node.get("description"),
                     parent_id=node.get("parent_id")
                 )
             
-            # Create new
-            place = Place(name=name.strip(), place_type=place_type, parent_id=parent_id)
+            # Create new place for this user
+            place = Place(
+                user_id=self.user_id,
+                name=name.strip(), 
+                place_type=place_type, 
+                parent_id=parent_id
+            )
             session.run(
                 """
                 CREATE (p:Place {
                     id: $id,
+                    user_id: $user_id,
                     name: $name,
                     place_type: $place_type,
                     description: $description,
@@ -96,6 +117,7 @@ class GraphService:
                 })
                 """,
                 id=place.id,
+                user_id=self.user_id,
                 name=place.name,
                 place_type=place.place_type.value,
                 description=place.description,
@@ -106,12 +128,13 @@ class GraphService:
             if parent_id:
                 session.run(
                     """
-                    MATCH (parent:Place {id: $parent_id})
-                    MATCH (child:Place {id: $child_id})
+                    MATCH (parent:Place {id: $parent_id, user_id: $user_id})
+                    MATCH (child:Place {id: $child_id, user_id: $user_id})
                     MERGE (parent)-[:CONTAINS]->(child)
                     """,
                     parent_id=parent_id,
-                    child_id=place.id
+                    child_id=place.id,
+                    user_id=self.user_id
                 )
             
             return place
@@ -175,11 +198,11 @@ class GraphService:
         """Store a new thing at the specified location.
         
         Creates the thing node, location hierarchy, and LOCATED_IN relationship.
-        Also creates an initial 'created' event.
+        Also creates OWNS relationship to the user.
         """
         tags = tags or []
         
-        # Check if thing already exists
+        # Check if thing already exists FOR THIS USER
         matches = self.find_thing_by_name(thing_name)
         
         if len(matches) > 1:
@@ -195,8 +218,8 @@ class GraphService:
             # Update description and tags if provided
             if description is not None or tags is not None:
                 with self._driver.session() as session:
-                    query = "MATCH (t:Thing {id: $id}) SET t.updated_at = datetime()"
-                    params = {"id": existing["id"]}
+                    query = "MATCH (t:Thing {id: $id, user_id: $user_id}) SET t.updated_at = datetime()"
+                    params = {"id": existing["id"], "user_id": self.user_id}
                     if description is not None:
                         query += ", t.description = $description"
                         params["description"] = description
@@ -206,10 +229,9 @@ class GraphService:
                     session.run(query, **params)
             
             # Update location
-            # If location is the same, move_thing will handle it as 'no change'
             result = self.move_thing(thing_name, location)
             
-            # If we also provided new description or tags, mark as updated if it wasn't a move
+            # Mark as updated if metadata changed
             if result.get("action") == "no_change" and (description is not None or tags is not None):
                 result["action"] = "updated"
                 result["message"] = f"Updated metadata for '{thing_name}'"
@@ -219,8 +241,9 @@ class GraphService:
         # Create location hierarchy
         leaf_place = self.create_location_hierarchy(location)
         
-        # Create thing
+        # Create thing with user_id
         thing = Thing(
+            user_id=self.user_id,
             name=thing_name.strip(),
             description=description,
             tags=tags
@@ -230,11 +253,12 @@ class GraphService:
         embedding_text = f"{thing.name}. {description or ''}. Tags: {', '.join(tags)}. Location: {location}"
         
         with self._driver.session() as session:
-            # Create thing node
+            # Create thing node with user_id
             session.run(
                 """
                 CREATE (t:Thing {
                     id: $id,
+                    user_id: $user_id,
                     name: $name,
                     description: $description,
                     tags: $tags,
@@ -244,6 +268,7 @@ class GraphService:
                 })
                 """,
                 id=thing.id,
+                user_id=self.user_id,
                 name=thing.name,
                 description=thing.description,
                 tags=thing.tags,
@@ -253,45 +278,25 @@ class GraphService:
             # Create LOCATED_IN relationship
             session.run(
                 """
-                MATCH (t:Thing {id: $thing_id})
-                MATCH (p:Place {id: $place_id})
+                MATCH (t:Thing {id: $thing_id, user_id: $user_id})
+                MATCH (p:Place {id: $place_id, user_id: $user_id})
                 MERGE (t)-[:LOCATED_IN]->(p)
                 """,
                 thing_id=thing.id,
-                place_id=leaf_place.id
+                place_id=leaf_place.id,
+                user_id=self.user_id
             )
             
-            # Create initial event
-            event = Event(event_type="created", to_place_id=leaf_place.id)
+            # Create OWNS relationship from User to Thing
             session.run(
                 """
-                CREATE (e:Event {
-                    id: $id,
-                    event_type: $event_type,
-                    timestamp: datetime(),
-                    to_place_id: $to_place_id
-                })
-                WITH e
-                MATCH (t:Thing {id: $thing_id})
-                MERGE (t)-[:LAST_SEEN]->(e)
+                MATCH (u:User {id: $user_id})
+                MATCH (t:Thing {id: $thing_id, user_id: $user_id})
+                MERGE (u)-[:OWNS]->(t)
                 """,
-                id=event.id,
-                event_type=event.event_type,
-                to_place_id=event.to_place_id,
+                user_id=self.user_id,
                 thing_id=thing.id
             )
-            
-            # Create OWNS relationship for user-level access control
-            if self.user_id:
-                session.run(
-                    """
-                    MATCH (u:User {id: $user_id})
-                    MATCH (t:Thing {id: $thing_id})
-                    MERGE (u)-[:OWNS]->(t)
-                    """,
-                    user_id=self.user_id,
-                    thing_id=thing.id
-                )
         
         location_path = self.get_location_path(thing.id)
         
@@ -320,33 +325,23 @@ class GraphService:
         }
     
     def find_thing_by_name(self, name: str) -> list[dict]:
-        """Find things by exact or fuzzy name match.
+        """Find things by exact or fuzzy name match (user-scoped).
         
-        Returns a list of all matching things.
+        Returns a list of all matching things FOR THE CURRENT USER.
         Prioritizes exact matches: if exact matches exist, only they are returned.
         If no exact matches, returns items where name CONTAINS the search term.
         """
         with self._driver.session() as session:
-            # First try exact matches
-            if self.user_id:
-                result = session.run(
-                    """
-                    MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
-                    WHERE toLower(t.name) = toLower($name)
-                    RETURN t
-                    """,
-                    user_id=self.user_id,
-                    name=name.strip()
-                )
-            else:
-                result = session.run(
-                    """
-                    MATCH (t:Thing)
-                    WHERE toLower(t.name) = toLower($name)
-                    RETURN t
-                    """,
-                    name=name.strip()
-                )
+            # First try exact matches - user-scoped
+            result = session.run(
+                """
+                MATCH (t:Thing {user_id: $user_id})
+                WHERE toLower(t.name) = toLower($name)
+                RETURN t
+                """,
+                user_id=self.user_id,
+                name=name.strip()
+            )
             
             records = list(result)
             if records:
@@ -361,26 +356,16 @@ class GraphService:
                     for r in records
                 ]
             
-            # If no exact match, try fuzzy match (CONTAINS)
-            if self.user_id:
-                result = session.run(
-                    """
-                    MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
-                    WHERE toLower(t.name) CONTAINS toLower($name)
-                    RETURN t
-                    """,
-                    user_id=self.user_id,
-                    name=name.strip()
-                )
-            else:
-                result = session.run(
-                    """
-                    MATCH (t:Thing)
-                    WHERE toLower(t.name) CONTAINS toLower($name)
-                    RETURN t
-                    """,
-                    name=name.strip()
-                )
+            # If no exact match, try fuzzy match (CONTAINS) - user-scoped
+            result = session.run(
+                """
+                MATCH (t:Thing {user_id: $user_id})
+                WHERE toLower(t.name) CONTAINS toLower($name)
+                RETURN t
+                """,
+                user_id=self.user_id,
+                name=name.strip()
+            )
             
             records = list(result)
             return [
@@ -398,7 +383,7 @@ class GraphService:
         """Find things matching a query using semantic (vector) search.
         
         Uses embedding-based similarity search for fuzzy matching.
-        If user_id is set, only returns things owned by that user.
+        Always user-scoped - only returns things for current user.
         """
         from services.memory_service import MemoryService
         
@@ -443,7 +428,7 @@ class GraphService:
     
     def move_thing(self, thing_name: str, new_location: str) -> dict:
         """Move a thing to a new location."""
-        # Find the thing
+        # Find the thing (user-scoped)
         matches = self.find_thing_by_name(thing_name)
         
         if not matches:
@@ -470,65 +455,37 @@ class GraphService:
         new_place = self.create_location_hierarchy(new_location)
         
         # Check if location actually changed
-        new_path = self.get_location_path(thing_id)
         if old_location and old_location["id"] == new_place.id:
             return {
                 "status": "success",
                 "action": "no_change",
                 "thing_name": thing["name"],
-                "location": new_path,
-                "message": f"'{thing['name']}' is already in {new_path}"
+                "location": self.get_location_path(thing_id),
+                "message": f"'{thing['name']}' is already in {self.get_location_path(thing_id)}"
             }
         
         with self._driver.session() as session:
             # Remove old LOCATED_IN relationship
             session.run(
                 """
-                MATCH (t:Thing {id: $thing_id})-[r:LOCATED_IN]->()
+                MATCH (t:Thing {id: $thing_id, user_id: $user_id})-[r:LOCATED_IN]->()
                 DELETE r
                 """,
-                thing_id=thing_id
+                thing_id=thing_id,
+                user_id=self.user_id
             )
             
             # Create new LOCATED_IN relationship
             session.run(
                 """
-                MATCH (t:Thing {id: $thing_id})
-                MATCH (p:Place {id: $place_id})
+                MATCH (t:Thing {id: $thing_id, user_id: $user_id})
+                MATCH (p:Place {id: $place_id, user_id: $user_id})
                 MERGE (t)-[:LOCATED_IN]->(p)
                 SET t.updated_at = datetime()
                 """,
                 thing_id=thing_id,
-                place_id=new_place.id
-            )
-            
-            # Create move event
-            event = Event(
-                event_type="moved",
-                from_place_id=old_location.get("id") if old_location else None,
-                to_place_id=new_place.id
-            )
-            session.run(
-                """
-                CREATE (e:Event {
-                    id: $id,
-                    event_type: 'moved',
-                    timestamp: datetime(),
-                    from_place_id: $from_place_id,
-                    to_place_id: $to_place_id
-                })
-                WITH e
-                MATCH (t:Thing {id: $thing_id})
-                // Remove old LAST_SEEN
-                OPTIONAL MATCH (t)-[r:LAST_SEEN]->()
-                DELETE r
-                WITH t, e
-                MERGE (t)-[:LAST_SEEN]->(e)
-                """,
-                id=event.id,
-                from_place_id=event.from_place_id,
-                to_place_id=event.to_place_id,
-                thing_id=thing_id
+                place_id=new_place.id,
+                user_id=self.user_id
             )
         
         new_path = self.get_location_path(thing_id)
@@ -546,14 +503,15 @@ class GraphService:
         }
     
     def _get_current_location(self, thing_id: str) -> Optional[dict]:
-        """Get the current location of a thing."""
+        """Get the current location of a thing (user-scoped)."""
         with self._driver.session() as session:
             result = session.run(
                 """
-                MATCH (t:Thing {id: $thing_id})-[:LOCATED_IN]->(p:Place)
+                MATCH (t:Thing {id: $thing_id, user_id: $user_id})-[:LOCATED_IN]->(p:Place)
                 RETURN p
                 """,
-                thing_id=thing_id
+                thing_id=thing_id,
+                user_id=self.user_id
             )
             record = result.single()
             if record:
@@ -566,13 +524,13 @@ class GraphService:
             return None
     
     def get_location_path(self, thing_id: str) -> str:
-        """Get full location path from thing to room."""
+        """Get full location path from thing to room (user-scoped)."""
         with self._driver.session() as session:
             # First get the direct location
             result = session.run(
                 """
-                MATCH (t:Thing {id: $thing_id})-[:LOCATED_IN]->(leaf:Place)
-                OPTIONAL MATCH path = (leaf)<-[:CONTAINS*]-(ancestor:Place)
+                MATCH (t:Thing {id: $thing_id, user_id: $user_id})-[:LOCATED_IN]->(leaf:Place)
+                OPTIONAL MATCH path = (leaf)<-[:CONTAINS*]-(ancestor:Place {user_id: $user_id})
                 WITH leaf, ancestor
                 ORDER BY CASE ancestor.place_type 
                     WHEN 'room' THEN 0 
@@ -582,7 +540,8 @@ class GraphService:
                 END
                 RETURN leaf, collect(ancestor.name) AS ancestors
                 """,
-                thing_id=thing_id
+                thing_id=thing_id,
+                user_id=self.user_id
             )
             record = result.single()
             if record:
@@ -603,7 +562,7 @@ class GraphService:
             with self._driver.session() as session:
                 result = session.run(
                     """
-                    MATCH (t:Thing {id: $id})
+                    MATCH (t:Thing {id: $id, user_id: $user_id})
                     OPTIONAL MATCH (t)-[:USED_FOR]->(i:Intent)
                     RETURN t.name as name, 
                            t.description as description, 
@@ -611,7 +570,8 @@ class GraphService:
                            i.name as intent
                     LIMIT 1
                     """,
-                    id=thing_id
+                    id=thing_id,
+                    user_id=self.user_id
                 )
                 record = result.single()
                 if not record:
@@ -637,7 +597,7 @@ class GraphService:
         thing2_name: str,
         relationship: Optional[str] = None
     ) -> dict:
-        """Create a RELATED_TO relationship between two things."""
+        """Create a RELATED_TO relationship between two things (user-scoped)."""
         matches1 = self.find_thing_by_name(thing1_name)
         matches2 = self.find_thing_by_name(thing2_name)
         
@@ -657,13 +617,14 @@ class GraphService:
         with self._driver.session() as session:
             session.run(
                 """
-                MATCH (t1:Thing {id: $id1})
-                MATCH (t2:Thing {id: $id2})
+                MATCH (t1:Thing {id: $id1, user_id: $user_id})
+                MATCH (t2:Thing {id: $id2, user_id: $user_id})
                 MERGE (t1)-[r:RELATED_TO]->(t2)
                 SET r.description = $relationship
                 """,
                 id1=thing1["id"],
                 id2=thing2["id"],
+                user_id=self.user_id,
                 relationship=relationship
             )
         
@@ -675,54 +636,37 @@ class GraphService:
     def list_contents(self, location: Optional[str] = None) -> dict:
         """List all things in a location (including sub-locations).
         
-        If location is None, lists all things owned by the user.
+        If location is None, lists all things for the user.
+        All queries are user-scoped.
         """
         with self._driver.session() as session:
             if not location:
                 # List all things for user
-                if self.user_id:
-                    result = session.run(
-                        """
-                        MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)
-                        OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place)
-                        RETURN t, p
-                        LIMIT 50
-                        """,
-                        user_id=self.user_id
-                    )
-                else:
-                    result = session.run("MATCH (t:Thing) OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place) RETURN t, p LIMIT 50")
-                
+                result = session.run(
+                    """
+                    MATCH (t:Thing {user_id: $user_id})
+                    OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place)
+                    RETURN t, p
+                    ORDER BY t.created_at DESC
+                    LIMIT 50
+                    """,
+                    user_id=self.user_id
+                )
                 place_name = "All locations"
             else:
-                # Find the target place first
-                # We use a broad search for the place name
-                if self.user_id:
-                    # Find things in this place OR its sub-places
-                    result = session.run(
-                        """
-                        MATCH (p:Place)
-                        WHERE toLower(p.name) CONTAINS toLower($location)
-                        WITH p
-                        MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)-[:LOCATED_IN]->(:Place)<-[:CONTAINS*0..]-(p)
-                        RETURN DISTINCT t, p
-                        LIMIT 50
-                        """,
-                        location=location.strip(),
-                        user_id=self.user_id
-                    )
-                else:
-                    result = session.run(
-                        """
-                        MATCH (p:Place)
-                        WHERE toLower(p.name) CONTAINS toLower($location)
-                        WITH p
-                        MATCH (t:Thing)-[:LOCATED_IN]->(:Place)<-[:CONTAINS*0..]-(p)
-                        RETURN DISTINCT t, p
-                        LIMIT 50
-                        """,
-                        location=location.strip()
-                    )
+                # Find things in this place OR its sub-places (user-scoped)
+                result = session.run(
+                    """
+                    MATCH (p:Place {user_id: $user_id})
+                    WHERE toLower(p.name) CONTAINS toLower($location)
+                    WITH p
+                    MATCH (t:Thing {user_id: $user_id})-[:LOCATED_IN]->(:Place {user_id: $user_id})<-[:CONTAINS*0..]-(p)
+                    RETURN DISTINCT t, p
+                    LIMIT 50
+                    """,
+                    location=location.strip(),
+                    user_id=self.user_id
+                )
                 place_name = location
 
             things = []
@@ -731,7 +675,6 @@ class GraphService:
                 node = record["t"]
                 place = record["p"]
                 if place and not location:
-                    # Keep track of last found place name if generic list
                     final_place_name = "Global"
                 elif place and location:
                     final_place_name = place["name"]
@@ -742,7 +685,7 @@ class GraphService:
                     "tags": list(node.get("tags", []))
                 }
                 
-                # Add location path for clarity in hierarchical results
+                # Add location path
                 thing_data["location_path"] = self.get_location_path(node["id"])
                 things.append(thing_data)
             
@@ -766,46 +709,20 @@ class GraphService:
     def list_places(self) -> dict:
         """List all places used by the user."""
         with self._driver.session() as session:
-            if self.user_id:
-                # Find all places connected to user's things
-                # Use COALESCE to handle null paths when no CONTAINS relationships exist
-                result = session.run(
-                    """
-                    MATCH (u:User {id: $user_id})-[:OWNS]->(t:Thing)-[:LOCATED_IN]->(p:Place)
-                    OPTIONAL MATCH path = (p)<-[:CONTAINS*]-(ancestor:Place)
-                    WITH p, COALESCE(nodes(path), []) + [p] as all_nodes
-                    UNWIND all_nodes as all_places
-                    WITH DISTINCT all_places
-                    WHERE all_places IS NOT NULL
-                    RETURN all_places.name as name, all_places.place_type as type
-                    ORDER BY CASE all_places.place_type 
-                        WHEN 'room' THEN 0 
-                        WHEN 'zone' THEN 1 
-                        WHEN 'container' THEN 2 
-                        ELSE 3 
-                    END, all_places.name
-                    """,
-                    user_id=self.user_id
-                )
-            else:
-                # Fallback: list all places (for testing with adk web)
-                result = session.run(
-                    """
-                    MATCH (t:Thing)-[:LOCATED_IN]->(p:Place)
-                    OPTIONAL MATCH path = (p)<-[:CONTAINS*]-(ancestor:Place)
-                    WITH p, COALESCE(nodes(path), []) + [p] as all_nodes
-                    UNWIND all_nodes as all_places
-                    WITH DISTINCT all_places
-                    WHERE all_places IS NOT NULL
-                    RETURN all_places.name as name, all_places.place_type as type
-                    ORDER BY CASE all_places.place_type 
-                        WHEN 'room' THEN 0 
-                        WHEN 'zone' THEN 1 
-                        WHEN 'container' THEN 2 
-                        ELSE 3 
-                    END, all_places.name
-                    """
-                )
+            # Find all places for this user
+            result = session.run(
+                """
+                MATCH (p:Place {user_id: $user_id})
+                RETURN p.name as name, p.place_type as type
+                ORDER BY CASE p.place_type 
+                    WHEN 'room' THEN 0 
+                    WHEN 'zone' THEN 1 
+                    WHEN 'container' THEN 2 
+                    ELSE 3 
+                END, p.name
+                """,
+                user_id=self.user_id
+            )
             
             places = [dict(r) for r in result]
             
@@ -817,7 +734,7 @@ class GraphService:
             }
     
     def attach_intent(self, thing_name: str, intent_name: str, description: Optional[str] = None) -> dict:
-        """Attach an intent/purpose to a thing."""
+        """Attach an intent/purpose to a thing (user-scoped)."""
         matches = self.find_thing_by_name(thing_name)
         if not matches:
             return {"status": "error", "message": f"'{thing_name}' not found"}
@@ -827,7 +744,7 @@ class GraphService:
         thing = matches[0]
         
         with self._driver.session() as session:
-            # Find or create intent
+            # Find or create intent (intents are shared across users for now)
             result = session.run(
                 """
                 MERGE (i:Intent {name: $name})
@@ -842,12 +759,13 @@ class GraphService:
             # Link thing to intent
             session.run(
                 """
-                MATCH (t:Thing {id: $thing_id})
+                MATCH (t:Thing {id: $thing_id, user_id: $user_id})
                 MATCH (i:Intent {id: $intent_id})
                 MERGE (t)-[:USED_FOR]->(i)
                 """,
                 thing_id=thing["id"],
-                intent_id=intent_node["id"]
+                intent_id=intent_node["id"],
+                user_id=self.user_id
             )
         
         # Re-index (intent changed)

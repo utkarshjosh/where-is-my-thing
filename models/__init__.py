@@ -1,4 +1,4 @@
-from models.entities import Thing, Place, Intent, Event, PlaceType
+from models.entities import Thing, Place, Intent, PlaceType, ItemType, CanonicalItem
 from models.graph_schema import NodeLabel, RelationType
 from models.user import User
 
@@ -6,8 +6,9 @@ __all__ = [
     "Thing",
     "Place", 
     "Intent",
-    "Event",
     "PlaceType",
+    "ItemType",
+    "CanonicalItem",
     "NodeLabel",
     "RelationType",
     "User",

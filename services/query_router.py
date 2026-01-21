@@ -7,6 +7,8 @@ Prevents:
 - Fake intelligence
 
 The rule: If the answer can be expressed as a Cypher query, don't embed it.
+
+NOTE: This router requires user_id for proper data isolation.
 """
 from typing import Optional
 from services.graph_service import GraphService
@@ -23,6 +25,8 @@ class QueryRouter:
     - Similar past descriptions → LlamaIndex
     - Reasoning over relations → Neo4j
     - Memory recall by vibe → LlamaIndex
+    
+    IMPORTANT: user_id is required for proper data isolation.
     """
     
     # Keywords indicating a graph query (Neo4j)
@@ -38,6 +42,14 @@ class QueryRouter:
         "remember when", "vibe", "category", "related", "type of",
         "anything", "something", "whatever",
     ]
+    
+    def __init__(self, user_id: Optional[str] = None):
+        """Initialize with user_id for data isolation.
+        
+        Args:
+            user_id: Internal user UUID. Required for proper data isolation.
+        """
+        self.user_id = user_id
     
     def route(self, query: str) -> dict:
         """Route query to appropriate system and execute.
@@ -70,7 +82,16 @@ class QueryRouter:
     
     def _graph_search(self, query: str) -> dict:
         """Direct graph search using Neo4j."""
-        with GraphService() as gs:
+        if not self.user_id:
+            return {
+                "status": "error",
+                "count": 0,
+                "things": [],
+                "route": "graph",
+                "message": "User context required for search"
+            }
+        
+        with GraphService(user_id=self.user_id) as gs:
             result = gs.find_thing(query)
         result["route"] = "graph"
         return result
@@ -82,7 +103,7 @@ class QueryRouter:
         then Neo4j resolves their current locations.
         """
         with MemoryService() as ms:
-            semantic_results = ms.semantic_search(query)
+            semantic_results = ms.semantic_search(query, user_id=self.user_id)
         
         if not semantic_results:
             return {
@@ -93,8 +114,18 @@ class QueryRouter:
                 "message": f"No semantic matches for '{query}'"
             }
         
+        if not self.user_id:
+            # Return semantic results without graph resolution
+            return {
+                "status": "success",
+                "count": len(semantic_results),
+                "things": semantic_results,
+                "route": "semantic (no graph)",
+                "message": f"Found {len(semantic_results)} semantically matching items"
+            }
+        
         # Resolve full location paths from graph
-        with GraphService() as gs:
+        with GraphService(user_id=self.user_id) as gs:
             things = []
             for r in semantic_results:
                 location_path = gs.get_location_path(r["id"])
