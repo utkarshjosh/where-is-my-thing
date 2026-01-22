@@ -56,14 +56,38 @@ def _get_user_id(current_user: AuthenticatedUser) -> str:
     return user.id
 
 
-def _infer_category(tags: list[str], name: str) -> str:
-    """Infer category from tags or name."""
+# Map item_type (from canonical service) to UI category
+ITEM_TYPE_TO_CATEGORY = {
+    "keys": "keys",
+    "book": "books",
+    "document": "documents",
+    "electronic": "electronics",
+    "clothing": "personal",
+    "tool": "home",
+    "personal": "personal",
+    "misc": "other",
+}
+
+
+def _get_category(item_type: Optional[str], tags: list[str], name: str) -> str:
+    """Get category from item_type or infer from tags/name.
+    
+    Priority:
+    1. Use item_type if available (from canonical service detection)
+    2. Fall back to keyword inference for legacy items without item_type
+    """
+    # Use item_type if available (stored on Thing from canonical detection)
+    if item_type:
+        return ITEM_TYPE_TO_CATEGORY.get(item_type, "other")
+    
+    # Fallback: infer from keywords for legacy items
     category_keywords = {
         "keys": ["key", "keys"],
+        "books": ["book", "novel", "textbook", "magazine", "comic", "manga", "journal"],
         "electronics": ["phone", "laptop", "charger", "cable", "electronic", "device", "power"],
         "documents": ["document", "passport", "paper", "file", "certificate", "id"],
-        "personal": ["wallet", "glasses", "watch", "jewelry", "bag"],
-        "home": ["tool", "kitchen", "furniture", "household"],
+        "personal": ["wallet", "glasses", "watch", "jewelry", "bag", "clothing", "shirt", "pants"],
+        "home": ["tool", "kitchen", "furniture", "household", "screwdriver", "hammer"],
     }
     
     search_text = " ".join(tags + [name]).lower()
@@ -84,18 +108,43 @@ async def list_items(
     """List all items for the authenticated user.
     
     Returns all things stored in the user's spatial memory graph.
-    Uses user_id property for efficient filtering.
+    Optimized: computes location_path in single query (no N+1).
     """
     user_id = _get_user_id(current_user)
     
     with GraphService(user_id=user_id) as gs:
         with gs._driver.session() as session:
-            # Query using user_id property on Thing (more efficient than traversing OWNS)
+            # Single query: get things with location path computed inline
+            # Avoids N+1 by computing location_path in Cypher
             result = session.run(
                 """
                 MATCH (t:Thing {user_id: $user_id})
-                OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place {user_id: $user_id})
-                RETURN t, p, t.created_at AS created_at
+                OPTIONAL MATCH (t)-[:LOCATED_IN]->(leaf:Place {user_id: $user_id})
+                OPTIONAL MATCH path = (leaf)<-[:CONTAINS*0..]-(ancestor:Place {user_id: $user_id})
+                WITH t, leaf, 
+                     CASE WHEN leaf IS NOT NULL 
+                          THEN leaf.name 
+                          ELSE null 
+                     END as location,
+                     CASE WHEN leaf IS NOT NULL
+                          THEN reverse(reduce(s = [], n IN nodes(path) | s + n.name))
+                          ELSE null
+                     END as path_parts
+                WITH t, location,
+                     CASE WHEN path_parts IS NOT NULL AND size(path_parts) > 0
+                          THEN reduce(s = '', i IN range(0, size(path_parts)-1) | 
+                               CASE WHEN i = 0 THEN path_parts[i] 
+                                    ELSE s + ' → ' + path_parts[i] END)
+                          ELSE location
+                     END as location_path
+                RETURN t.id as id,
+                       t.name as name,
+                       t.description as description,
+                       t.tags as tags,
+                       t.item_type as item_type,
+                       location,
+                       location_path,
+                       t.created_at as created_at
                 ORDER BY created_at DESC
                 SKIP $offset LIMIT $limit
                 """,
@@ -106,23 +155,18 @@ async def list_items(
             
             items = []
             for record in result:
-                node = record["t"]
-                place = record["p"]
-                
-                if not node:
-                    continue
-                
-                tags = list(node.get("tags", []))
-                name = node.get("name", "Unnamed")
+                tags = list(record["tags"] or [])
+                name = record["name"] or "Unnamed"
+                item_type = record["item_type"]
                 
                 item = ItemResponse(
-                    id=node["id"],
+                    id=record["id"],
                     name=name,
-                    description=node.get("description"),
+                    description=record["description"],
                     tags=tags,
-                    location=place["name"] if place else None,
-                    location_path=gs.get_location_path(node["id"]) if place else None,
-                    category=_infer_category(tags, name),
+                    location=record["location"],
+                    location_path=record["location_path"],
+                    category=_get_category(item_type, tags, name),
                 )
                 items.append(item)
     
@@ -137,26 +181,44 @@ async def search_items(
 ):
     """Search items by name, description, or tags.
     
-    Performs a fuzzy search across the user's stored things.
+    Performs semantic search across the user's stored things.
     """
     user_id = _get_user_id(current_user)
     
     with GraphService(user_id=user_id) as gs:
         result = gs.find_thing(q)
         
+        # Get item_types for search results in one query
+        thing_ids = [t["id"] for t in result.get("things", []) if t.get("id")]
+        item_types = {}
+        if thing_ids:
+            with gs._driver.session() as session:
+                type_result = session.run(
+                    """
+                    MATCH (t:Thing {user_id: $user_id})
+                    WHERE t.id IN $ids
+                    RETURN t.id as id, t.item_type as item_type
+                    """,
+                    user_id=user_id,
+                    ids=thing_ids
+                )
+                item_types = {r["id"]: r["item_type"] for r in type_result}
+        
         items = []
         for thing in result.get("things", []):
             tags = thing.get("tags", [])
             name = thing["name"]
+            thing_id = thing["id"]
+            item_type = item_types.get(thing_id)
             
             item = ItemResponse(
-                id=thing["id"],
+                id=thing_id,
                 name=name,
                 description=thing.get("description"),
                 tags=tags,
                 location=thing.get("location"),
                 location_path=thing.get("location_path"),
-                category=_infer_category(tags, name),
+                category=_get_category(item_type, tags, name),
             )
             items.append(item)
     
@@ -171,18 +233,38 @@ async def get_item(
     """Get a single item by ID.
     
     Returns details for a specific thing.
-    Uses user_id property for efficient access control.
+    Optimized: computes location_path in single query.
     """
     user_id = _get_user_id(current_user)
     
     with GraphService(user_id=user_id) as gs:
         with gs._driver.session() as session:
-            # Use user_id property for filtering (more efficient)
+            # Single query with location_path computed inline
             result = session.run(
                 """
                 MATCH (t:Thing {id: $item_id, user_id: $user_id})
-                OPTIONAL MATCH (t)-[:LOCATED_IN]->(p:Place {user_id: $user_id})
-                RETURN t, p
+                OPTIONAL MATCH (t)-[:LOCATED_IN]->(leaf:Place {user_id: $user_id})
+                OPTIONAL MATCH path = (leaf)<-[:CONTAINS*0..]-(ancestor:Place {user_id: $user_id})
+                WITH t, leaf,
+                     CASE WHEN leaf IS NOT NULL THEN leaf.name ELSE null END as location,
+                     CASE WHEN leaf IS NOT NULL
+                          THEN reverse(reduce(s = [], n IN nodes(path) | s + n.name))
+                          ELSE null
+                     END as path_parts
+                WITH t, location,
+                     CASE WHEN path_parts IS NOT NULL AND size(path_parts) > 0
+                          THEN reduce(s = '', i IN range(0, size(path_parts)-1) | 
+                               CASE WHEN i = 0 THEN path_parts[i] 
+                                    ELSE s + ' → ' + path_parts[i] END)
+                          ELSE location
+                     END as location_path
+                RETURN t.id as id,
+                       t.name as name,
+                       t.description as description,
+                       t.tags as tags,
+                       t.item_type as item_type,
+                       location,
+                       location_path
                 """,
                 user_id=user_id,
                 item_id=item_id
@@ -193,18 +275,16 @@ async def get_item(
                 from fastapi import HTTPException
                 raise HTTPException(status_code=404, detail="Item not found")
             
-            node = record["t"]
-            place = record["p"]
-            
-            tags = list(node.get("tags", []))
-            name = node["name"]
+            tags = list(record["tags"] or [])
+            name = record["name"]
+            item_type = record["item_type"]
             
             return ItemResponse(
-                id=node["id"],
+                id=record["id"],
                 name=name,
-                description=node.get("description"),
+                description=record["description"],
                 tags=tags,
-                location=place["name"] if place else None,
-                location_path=gs.get_location_path(node["id"]) if place else None,
-                category=_infer_category(tags, name),
+                location=record["location"],
+                location_path=record["location_path"],
+                category=_get_category(item_type, tags, name),
             )

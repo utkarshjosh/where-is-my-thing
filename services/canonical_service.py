@@ -26,29 +26,53 @@ FILLER_WORDS = {
 }
 
 # Type words that indicate item_type (strip if redundant in name)
+# Aligned with UI categories: keys, books, electronics, documents, personal, home, other
 TYPE_INDICATORS = {
+    # Keys category
+    "key": ItemType.KEYS,
+    "keys": ItemType.KEYS,
+    "keychain": ItemType.KEYS,
+    # Books category
     "book": ItemType.BOOK,
     "novel": ItemType.BOOK,
     "textbook": ItemType.BOOK,
+    "magazine": ItemType.BOOK,
+    "comic": ItemType.BOOK,
+    "manga": ItemType.BOOK,
+    # Documents category
     "document": ItemType.DOCUMENT,
     "paper": ItemType.DOCUMENT,
     "file": ItemType.DOCUMENT,
+    "passport": ItemType.DOCUMENT,
+    "certificate": ItemType.DOCUMENT,
+    # Electronics category
     "phone": ItemType.ELECTRONIC,
     "laptop": ItemType.ELECTRONIC,
     "charger": ItemType.ELECTRONIC,
     "cable": ItemType.ELECTRONIC,
     "electronic": ItemType.ELECTRONIC,
+    "device": ItemType.ELECTRONIC,
+    "tablet": ItemType.ELECTRONIC,
+    "headphones": ItemType.ELECTRONIC,
+    "earbuds": ItemType.ELECTRONIC,
+    # Clothing -> maps to personal in UI
     "shirt": ItemType.CLOTHING,
     "pants": ItemType.CLOTHING,
     "jacket": ItemType.CLOTHING,
     "clothing": ItemType.CLOTHING,
     "clothes": ItemType.CLOTHING,
+    # Tools -> maps to home in UI
     "tool": ItemType.TOOL,
     "screwdriver": ItemType.TOOL,
     "hammer": ItemType.TOOL,
+    "wrench": ItemType.TOOL,
+    # Personal category
     "wallet": ItemType.PERSONAL,
-    "keys": ItemType.PERSONAL,
     "glasses": ItemType.PERSONAL,
+    "watch": ItemType.PERSONAL,
+    "jewelry": ItemType.PERSONAL,
+    "bag": ItemType.PERSONAL,
+    # Misc -> maps to other in UI
     "pen": ItemType.MISC,
     "pencil": ItemType.MISC,
 }

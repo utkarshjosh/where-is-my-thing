@@ -82,6 +82,7 @@ export const categories = {
   keys: { icon: 'IconKey', label: 'Keys', color: '#f59e0b' },
   electronics: { icon: 'IconDeviceMobile', label: 'Electronics', color: '#3b82f6' },
   documents: { icon: 'IconFileText', label: 'Documents', color: '#8b5cf6' },
+  books: { icon: 'IconBook', label: 'Books', color: '#ef4444' },
   personal: { icon: 'IconUser', label: 'Personal', color: '#ec4899' },
   home: { icon: 'IconHome', label: 'Home', color: '#10b981' },
   other: { icon: 'IconBox', label: 'Other', color: '#6b7280' },

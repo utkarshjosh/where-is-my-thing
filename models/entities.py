@@ -28,13 +28,17 @@ class PlaceType(str, Enum):
 
 
 class ItemType(str, Enum):
-    """Types of items for canonical classification."""
+    """Types of items for canonical classification.
+    
+    Aligned with UI categories for consistent display.
+    """
+    KEYS = "keys"  # keys, keychains
     BOOK = "book"
     DOCUMENT = "document"
     ELECTRONIC = "electronic"
     CLOTHING = "clothing"
     TOOL = "tool"
-    PERSONAL = "personal"  # wallet, glasses, keys
+    PERSONAL = "personal"  # wallet, glasses, watch
     MISC = "misc"
 
 

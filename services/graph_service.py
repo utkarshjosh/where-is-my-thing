@@ -222,6 +222,9 @@ class GraphService:
         resolved_canonical_id = canonical_id
         canonical_name = thing_name  # Default to thing_name
         
+        # Track item_type for storage on Thing node
+        resolved_item_type = None
+        
         if not skip_canonical_check and not canonical_id:
             from services.canonical_service import CanonicalService
             with CanonicalService(self.user_id) as cs:
@@ -244,6 +247,16 @@ class GraphService:
                 # Got a canonical (either reused or created)
                 resolved_canonical_id = resolution["canonical_id"]
                 canonical_name = resolution["canonical_name"]
+                resolved_item_type = resolution.get("item_type")
+        
+        # If canonical_id was provided, fetch item_type from the canonical
+        elif canonical_id:
+            from services.canonical_service import CanonicalService
+            with CanonicalService(self.user_id) as cs:
+                canonical_data = cs.get_canonical_by_id(canonical_id)
+                if canonical_data:
+                    resolved_item_type = canonical_data.get("item_type")
+                    canonical_name = canonical_data.get("canonical_name", thing_name)
         
         # Step 2: Check if thing already exists FOR THIS USER
         # Use canonical_name for matching if we have it, otherwise thing_name
@@ -295,20 +308,22 @@ class GraphService:
         # Step 3: Create location hierarchy
         leaf_place = self.create_location_hierarchy(location)
         
-        # Step 4: Create thing with user_id
+        # Step 4: Create thing with user_id and item_type
         # Use canonical_name for the thing name (normalized)
+        from models import ItemType
         thing = Thing(
             user_id=self.user_id,
             name=canonical_name,
             description=description,
-            tags=tags
+            tags=tags,
+            item_type=ItemType(resolved_item_type) if resolved_item_type else None
         )
         
         # Build embedding text for semantic search
         embedding_text = f"{thing.name}. {description or ''}. Tags: {', '.join(tags)}. Location: {location}"
         
         with self._driver.session() as session:
-            # Create thing node with user_id
+            # Create thing node with user_id and item_type
             session.run(
                 """
                 CREATE (t:Thing {
@@ -317,6 +332,7 @@ class GraphService:
                     name: $name,
                     description: $description,
                     tags: $tags,
+                    item_type: $item_type,
                     embedding_text: $embedding_text,
                     created_at: datetime(),
                     updated_at: datetime()
@@ -327,6 +343,7 @@ class GraphService:
                 name=thing.name,
                 description=thing.description,
                 tags=thing.tags,
+                item_type=resolved_item_type,
                 embedding_text=embedding_text
             )
             
