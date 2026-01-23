@@ -23,6 +23,7 @@ interface UseVoiceAgentOptions {
 // Subscriber interface for WebSocket events
 interface WebSocketSubscriber {
   onMessage: (message: WebSocketMessage) => void;
+  onBinaryAudio: (audioData: ArrayBuffer) => void;  // New: binary audio frames
   onConnect: () => void;
   onDisconnect: () => void;
   onError: (error: Error) => void;
@@ -81,6 +82,12 @@ class VoiceWebSocketManager {
   private notifyMessage(message: WebSocketMessage) {
     this.subscribers.forEach((subscriber) => {
       subscriber.onMessage(message);
+    });
+  }
+
+  private notifyBinaryAudio(audioData: ArrayBuffer) {
+    this.subscribers.forEach((subscriber) => {
+      subscriber.onBinaryAudio(audioData);
     });
   }
 
@@ -152,6 +159,21 @@ class VoiceWebSocketManager {
 
         ws.onmessage = async (event) => {
           try {
+            // Handle binary frames (raw audio data - no base64 decode needed!)
+            if (event.data instanceof Blob) {
+              // Convert Blob to ArrayBuffer and notify as binary audio
+              const arrayBuffer = await event.data.arrayBuffer();
+              this.notifyBinaryAudio(arrayBuffer);
+              return;
+            }
+            
+            if (event.data instanceof ArrayBuffer) {
+              // Direct ArrayBuffer (less common but possible)
+              this.notifyBinaryAudio(event.data);
+              return;
+            }
+            
+            // Handle text frames (JSON control messages)
             const message: WebSocketMessage = JSON.parse(event.data);
             this.notifyMessage(message);
           } catch (e) {
@@ -238,6 +260,14 @@ class VoiceWebSocketManager {
     if (this.ws?.readyState === WebSocket.OPEN) {
       const message = typeof data === 'string' ? data : JSON.stringify(data);
       this.ws.send(message);
+      return true;
+    }
+    return false;
+  }
+
+  sendBinary(data: ArrayBuffer | Blob) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(data);
       return true;
     }
     return false;
@@ -368,20 +398,37 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
       onMessage: (message: WebSocketMessage) => {
         switch (message.type) {
           case 'transcript':
-            // Only add assistant transcripts from WebSocket - user transcripts are added locally when sending
-            if (message.role === 'assistant') {
-              addTranscript({
-                role: message.role,
-                text: message.text,
-              });
-              optionsRef.current.onTranscript?.(message.role, message.text);
+            // Add both user and assistant transcripts from WebSocket
+            // User transcripts come from backend after STT processing in voice mode
+            // Assistant transcripts come during/after LLM processing
+            addTranscript({
+              role: message.role,
+              text: message.text,
+            });
+            optionsRef.current.onTranscript?.(message.role, message.text);
+            
+            // Update voice state based on transcript role
+            if (message.role === 'user') {
+              // User transcript received - backend is processing (STT done, LLM processing)
+              setVoiceState('thinking');
+            } else if (message.role === 'assistant') {
+              // Assistant transcript received - will start speaking soon
               setVoiceState('speaking');
             }
             break;
 
           case 'audio':
-            // Play audio response
+            // Legacy base64 audio support (fallback)
             playAudio(message.data);
+            break;
+
+          case 'audio_start':
+            // Audio stream starting - set speaking state
+            setVoiceState('speaking');
+            break;
+
+          case 'audio_end':
+            // Audio stream ended - handled by turn_complete
             break;
 
           case 'interrupt':
@@ -425,6 +472,12 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
           }
         }
       },
+      onBinaryAudio: (audioData: ArrayBuffer) => {
+        // Binary audio frame received - queue directly (no base64 decode!)
+        audioQueueRef.current.push(audioData);
+        const audioContext = initAudioContext();
+        processAudioQueue(audioContext);
+      },
       onConnect: () => {
         setManagerConnected(true);
         setConnected(true);
@@ -448,7 +501,7 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
       unsubscribe();
       unsubscribeRef.current = null;
     };
-  }, [getToken, addTranscript, addToolCall, addToolResult, setVoiceState, setConnected, setError, playAudio, stopAudioPlayback]);
+  }, [getToken, addTranscript, addToolCall, addToolResult, setVoiceState, setConnected, setError, playAudio, stopAudioPlayback, initAudioContext, processAudioQueue]);
 
   // Connect to WebSocket via singleton manager
   const connect = useCallback(async () => {
@@ -590,20 +643,20 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
       audioChunksRef.current = [];
 
       const manager = wsManagerRef.current;
-      if (audioBlob.size > 0 && manager?.isConnected) {
-        // Convert to base64 and send
-        const reader = new FileReader();
-        reader.onload = () => {
-          const base64 = (reader.result as string).split(',')[1];
-          manager.send({
-            type: 'audio',
-            data: base64,
-          });
-          manager.send({
-            type: 'end_turn',
-          });
-        };
-        reader.readAsDataURL(audioBlob);
+      if (manager?.isConnected) {
+        if (audioBlob.size > 0) {
+          // Send audio as binary (no base64 encoding - ~33% bandwidth savings!)
+          const arrayBuffer = await audioBlob.arrayBuffer();
+          manager.sendBinary(arrayBuffer);
+        }
+        
+        // Send end_turn as JSON control message (even if no audio, backend will send turn_complete)
+        manager.send({
+          type: 'end_turn',
+        });
+      } else {
+        // Not connected - reset to idle
+        setVoiceState('idle');
       }
     } catch (e) {
       const err = e instanceof Error ? e : new Error('Failed to stop recording');

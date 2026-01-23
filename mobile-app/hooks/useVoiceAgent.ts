@@ -80,6 +80,35 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
 
             ws.onmessage = async (event) => {
                 try {
+                    // Handle binary frames (raw audio data - no base64!)
+                    if (event.data instanceof Blob) {
+                        // Convert Blob to base64 for expo-av playback
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                            const base64 = (reader.result as string).split(',')[1];
+                            if (base64) {
+                                audioQueueRef.current.push(base64);
+                                playNextAudio();
+                            }
+                        };
+                        reader.readAsDataURL(event.data);
+                        return;
+                    }
+
+                    if (event.data instanceof ArrayBuffer) {
+                        // Convert ArrayBuffer to base64 for expo-av playback
+                        const bytes = new Uint8Array(event.data);
+                        let binary = '';
+                        for (let i = 0; i < bytes.byteLength; i++) {
+                            binary += String.fromCharCode(bytes[i]);
+                        }
+                        const base64 = btoa(binary);
+                        audioQueueRef.current.push(base64);
+                        playNextAudio();
+                        return;
+                    }
+
+                    // Handle text frames (JSON control messages)
                     const message = JSON.parse(event.data);
 
                     switch (message.type) {
@@ -93,15 +122,29 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
                             setTranscripts(prev => [...prev, transcript]);
                             options.onTranscript?.(transcript);
 
-                            if (message.role === 'assistant') {
+                            // Update voice state based on transcript role
+                            if (message.role === 'user') {
+                                // User transcript received - backend is processing (STT done, LLM processing)
+                                setState('thinking');
+                            } else if (message.role === 'assistant') {
+                                // Assistant transcript received - will start speaking soon
                                 setState('speaking');
                             }
                             break;
 
                         case 'audio':
-                            // Queue audio for playback (play immediately)
+                            // Legacy base64 audio support (fallback)
                             audioQueueRef.current.push(message.data);
                             playNextAudio();
+                            break;
+
+                        case 'audio_start':
+                            // Audio stream starting
+                            setState('speaking');
+                            break;
+
+                        case 'audio_end':
+                            // Audio stream ended - handled by turn_complete
                             break;
 
                         case 'interrupt':
@@ -447,17 +490,19 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
                     mediaStreamRef.current = null;
                 }
 
-                if (blob && wsRef.current?.readyState === WebSocket.OPEN) {
-                    const base64 = await blobToBase64(blob);
-                    if (base64) {
-                        wsRef.current?.send(JSON.stringify({
-                            type: 'audio',
-                            data: base64,
-                        }));
-                        wsRef.current?.send(JSON.stringify({
-                            type: 'end_turn',
-                        }));
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                    if (blob) {
+                        // Send audio as binary frame (no base64 encoding - ~33% bandwidth savings!)
+                        const arrayBuffer = await blob.arrayBuffer();
+                        wsRef.current?.send(arrayBuffer);
                     }
+                    // Always send end_turn (even if no audio, backend will send turn_complete)
+                    wsRef.current?.send(JSON.stringify({
+                        type: 'end_turn',
+                    }));
+                } else {
+                    // Not connected - reset to idle
+                    setState('idle');
                 }
                 return;
             }
@@ -472,24 +517,35 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}) {
                 allowsRecordingIOS: false,
             });
 
-            if (uri && wsRef.current?.readyState === WebSocket.OPEN) {
-                // Read file and send as base64
-                const response = await fetch(uri);
-                const blob = await response.blob();
-                const reader = new FileReader();
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+                if (uri) {
+                    // Read file and send as base64
+                    const response = await fetch(uri);
+                    const blob = await response.blob();
+                    const reader = new FileReader();
 
-                reader.onload = () => {
-                    const base64 = (reader.result as string).split(',')[1];
-                    wsRef.current?.send(JSON.stringify({
-                        type: 'audio',
-                        data: base64,
-                    }));
+                    reader.onload = () => {
+                        const base64 = (reader.result as string).split(',')[1];
+                        wsRef.current?.send(JSON.stringify({
+                            type: 'audio',
+                            data: base64,
+                        }));
+                        // Always send end_turn (even if no audio, backend will send turn_complete)
+                        wsRef.current?.send(JSON.stringify({
+                            type: 'end_turn',
+                        }));
+                    };
+
+                    reader.readAsDataURL(blob);
+                } else {
+                    // No audio file - still send end_turn so backend can respond
                     wsRef.current?.send(JSON.stringify({
                         type: 'end_turn',
                     }));
-                };
-
-                reader.readAsDataURL(blob);
+                }
+            } else {
+                // Not connected - reset to idle
+                setState('idle');
             }
         } catch (e) {
             const err = e instanceof Error ? e : new Error('Failed to stop recording');

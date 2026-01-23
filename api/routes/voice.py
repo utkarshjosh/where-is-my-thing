@@ -2,6 +2,10 @@
 
 Uses ADK with LiteLLM (Groq) for text processing, and Groq's Whisper STT
 and Orpheus TTS for audio input/output.
+
+Optimizations:
+- Binary WebSocket frames for audio (no base64 overhead)
+- Sentence-level TTS streaming for lower perceived latency
 """
 import asyncio
 import base64
@@ -11,11 +15,13 @@ import io
 import os
 import logging
 import re
+import struct
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Optional, Callable, List
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
+from starlette.websockets import WebSocketState
 import jwt
 
 from google.adk.runners import Runner
@@ -30,6 +36,54 @@ from config import get_settings
 
 # Set up logger
 logger = logging.getLogger(__name__)
+
+
+# Binary message protocol constants
+# We use a simple 1-byte header to distinguish message types in binary frames
+BINARY_MSG_AUDIO = 0x01  # Audio data follows
+BINARY_MSG_CONTROL = 0x02  # JSON control message follows (unused, we use text frames for JSON)
+
+
+def split_into_sentences(text: str) -> List[str]:
+    """Split text into sentences for streaming TTS.
+    
+    Uses a simple regex-based approach that handles common sentence endings
+    while being careful about abbreviations and numbers.
+    
+    Returns a list where the last element may be an incomplete sentence.
+    """
+    if not text:
+        return []
+    
+    # Pattern matches sentence-ending punctuation followed by space or end of string
+    # Negative lookbehind for common abbreviations (Mr., Mrs., Dr., etc.)
+    # and single letters (initials like "J. K. Rowling")
+    sentence_end_pattern = r'(?<![A-Z])(?<!\b[A-Z])(?<!\bMr)(?<!\bMrs)(?<!\bMs)(?<!\bDr)(?<!\bProf)(?<!\bSr)(?<!\bJr)(?<!\bvs)(?<!\betc)(?<!\be\.g)(?<!\bi\.e)[.!?]+(?=\s|$)'
+    
+    # Find all sentence boundaries
+    sentences = []
+    last_end = 0
+    
+    for match in re.finditer(sentence_end_pattern, text):
+        end_pos = match.end()
+        sentence = text[last_end:end_pos].strip()
+        if sentence:
+            sentences.append(sentence)
+        last_end = end_pos
+    
+    # Add remaining text (possibly incomplete sentence)
+    remaining = text[last_end:].strip()
+    if remaining:
+        sentences.append(remaining)
+    
+    return sentences
+
+
+def is_complete_sentence(text: str) -> bool:
+    """Check if text ends with sentence-ending punctuation."""
+    if not text:
+        return False
+    return text.rstrip()[-1] in '.!?'
 
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -109,7 +163,12 @@ def _resolve_user_id(clerk_user_id: str, email: str = None) -> str:
         
     Returns:
         Internal user UUID
+        
+    Raises:
+        ConnectionError: If Neo4j is not available
     """
+    from neo4j.exceptions import ServiceUnavailable
+    
     cache = get_user_id_cache()
     
     # Check cache first
@@ -119,11 +178,21 @@ def _resolve_user_id(clerk_user_id: str, email: str = None) -> str:
         return cached_id
     
     # Cache miss - query Neo4j
-    with UserService() as us:
-        user = us.find_or_create_user(
-            clerk_user_id=clerk_user_id,
-            email=email,
-        )
+    try:
+        with UserService() as us:
+            user = us.find_or_create_user(
+                clerk_user_id=clerk_user_id,
+                email=email,
+            )
+    except ServiceUnavailable as e:
+        logger.error(f"Neo4j connection failed: {e}")
+        raise ConnectionError(
+            "Database connection failed. Please ensure Neo4j is running. "
+            "Try: sudo systemctl start neo4j.service"
+        ) from e
+    except Exception as e:
+        logger.error(f"Failed to resolve user ID: {e}", exc_info=True)
+        raise
     
     # Cache the result
     cache.set(cache_key, user.id)
@@ -274,18 +343,20 @@ async def voice_agent_websocket(
     3. Server streams back audio responses and text transcripts
     
     Message format (client -> server):
-        {"type": "audio", "data": "<base64 encoded PCM audio>"}
-        {"type": "text", "data": "text message"}
-        {"type": "end_turn"}  # Signal end of user turn
+        Binary frame: Raw audio bytes (WebM/Opus or PCM)
+        Text frame: {"type": "text", "data": "text message"}
+        Text frame: {"type": "end_turn"}  # Signal end of user turn
+        Text frame: {"type": "audio", "data": "<base64>"}  # Legacy fallback
     
     Message format (server -> client):
-        {"type": "audio", "data": "<base64 encoded WAV audio>"}
-        {"type": "transcript", "role": "user", "text": "..."}
-        {"type": "transcript", "role": "assistant", "text": "..."}
-        {"type": "tool_call", "name": "...", "args": {...}}
-        {"type": "tool_result", "name": "...", "result": {...}}
-        {"type": "turn_complete"}
-        {"type": "error", "message": "..."}
+        Binary frame: Raw audio bytes (WAV/Opus) - for audio playback
+        Text frame: {"type": "transcript", "role": "user"|"assistant", "text": "..."}
+        Text frame: {"type": "tool_call", "name": "...", "args": {...}}
+        Text frame: {"type": "tool_result", "name": "...", "result": {...}}
+        Text frame: {"type": "turn_complete"}
+        Text frame: {"type": "audio_start"}  # Signals start of audio stream
+        Text frame: {"type": "audio_end"}  # Signals end of audio stream
+        Text frame: {"type": "error", "message": "..."}
     """
     # Verify token before accepting connection
     user_claims = await verify_websocket_token(token)
@@ -297,7 +368,28 @@ async def voice_agent_websocket(
     # The agent tools expect internal user_id, not clerk_user_id
     clerk_user_id = user_claims.get("sub", "anonymous")
     email = user_claims.get("email")
-    user_id = _resolve_user_id(clerk_user_id, email)
+    
+    try:
+        user_id = _resolve_user_id(clerk_user_id, email)
+    except ConnectionError as e:
+        # Neo4j is not available - send error and close
+        logger.error(f"Database unavailable during WebSocket connection: {e}")
+        await websocket.accept()  # Accept to send error message
+        await websocket.send_json({
+            "type": "error",
+            "message": str(e)
+        })
+        await websocket.close(code=1013, reason="Database unavailable")
+        return
+    except Exception as e:
+        logger.error(f"Failed to resolve user ID: {e}", exc_info=True)
+        await websocket.accept()  # Accept to send error message
+        await websocket.send_json({
+            "type": "error",
+            "message": f"Failed to initialize user session: {str(e)}"
+        })
+        await websocket.close(code=1011, reason="Internal error")
+        return
     
     # Accept the WebSocket connection
     await websocket.accept()
@@ -341,18 +433,42 @@ async def voice_agent_websocket(
         
         while True:
             try:
-                data = await websocket.receive_text()
-                message = json.loads(data)
-                msg_type = message.get("type")
+                # Receive either binary or text message
+                ws_message = await websocket.receive()
                 
-                if msg_type == "audio":
+                # Handle binary frames (raw audio data - preferred)
+                if "bytes" in ws_message:
+                    audio_data = ws_message["bytes"]
+                    
                     # Cancel any ongoing TTS if user starts speaking over AI
                     if tts_in_progress.is_set():
                         tts_cancelled = True
                         await websocket.send_json({
                             "type": "interrupt"
                         })
-                        # Wait a bit for TTS to cancel
+                        await asyncio.sleep(0.1)
+                        tts_cancelled = False
+                    
+                    # Accumulate binary audio directly (no base64 decode needed)
+                    if audio_data:
+                        audio_buffer.extend(audio_data)
+                    continue
+                
+                # Handle text frames (JSON control messages)
+                if "text" not in ws_message:
+                    continue
+                    
+                data = ws_message["text"]
+                message = json.loads(data)
+                msg_type = message.get("type")
+                
+                if msg_type == "audio":
+                    # Legacy base64 audio support (fallback for older clients)
+                    if tts_in_progress.is_set():
+                        tts_cancelled = True
+                        await websocket.send_json({
+                            "type": "interrupt"
+                        })
                         await asyncio.sleep(0.1)
                         tts_cancelled = False
                     
@@ -550,6 +666,44 @@ async def voice_agent_websocket(
             pass
 
 
+async def send_audio_binary(websocket: WebSocket, audio_data: bytes):
+    """Send audio data as binary WebSocket frame.
+    
+    Uses binary frames instead of base64 JSON for ~33% bandwidth savings
+    and reduced CPU overhead.
+    """
+    if websocket.application_state == WebSocketState.CONNECTED:
+        await websocket.send_bytes(audio_data)
+
+
+async def stream_tts_for_sentence(
+    websocket: WebSocket,
+    groq_service,
+    sentence: str,
+    is_cancelled: Optional[Callable[[], bool]] = None
+) -> bool:
+    """Generate and stream TTS for a single sentence.
+    
+    Returns True if successful, False if cancelled or error.
+    """
+    if is_cancelled and is_cancelled():
+        return False
+    
+    try:
+        audio_data = await groq_service.text_to_speech(sentence)
+        
+        if is_cancelled and is_cancelled():
+            return False
+        
+        # Send as binary frame (no base64 encoding!)
+        await send_audio_binary(websocket, audio_data)
+        return True
+        
+    except Exception as e:
+        logger.error(f"TTS error for sentence: {e}", exc_info=True)
+        return False
+
+
 async def process_agent_turn(
     websocket: WebSocket,
     runner: Runner,
@@ -561,6 +715,10 @@ async def process_agent_turn(
     is_cancelled: Optional[Callable[[], bool]] = None
 ):
     """Process a single turn of user input through the agent.
+    
+    Features:
+    - Sentence-level TTS streaming for lower perceived latency
+    - Binary WebSocket frames for audio (no base64 overhead)
     
     Args:
         websocket: WebSocket connection
@@ -579,7 +737,7 @@ async def process_agent_turn(
             parts=[types.Part(text=user_text)]
         )
         
-        # Run the agent (non-streaming for now)
+        # Run the agent and collect response
         response_text = ""
         
         # Set user context for tools
@@ -645,30 +803,59 @@ async def process_agent_turn(
             if tts_in_progress:
                 tts_in_progress.set()
             
-            # Convert response to speech with Orpheus TTS
             try:
                 # Check cancellation before starting TTS
                 if is_cancelled and is_cancelled():
                     logger.info("TTS cancelled before API call")
                     return
                 
-                # Generate TTS audio
-                audio_data = await groq_service.text_to_speech(tts_text)
+                # Signal start of audio stream
+                await websocket.send_json({"type": "audio_start"})
                 
-                # Check cancellation after TTS generation
-                if is_cancelled and is_cancelled():
-                    logger.info("TTS cancelled after generation, not sending audio")
-                    return
+                # Split into sentences and stream TTS for each
+                sentences = split_into_sentences(tts_text)
                 
-                # Send audio immediately after generation
-                audio_b64 = base64.b64encode(audio_data).decode("utf-8")
+                if len(sentences) <= 1:
+                    # Single sentence or short response - send as one chunk
+                    if tts_text.strip():
+                        await stream_tts_for_sentence(
+                            websocket, groq_service, tts_text, is_cancelled
+                        )
+                else:
+                    # Multiple sentences - stream each one
+                    # Combine very short sentences with the next one for natural speech
+                    combined_sentences = []
+                    current = ""
+                    
+                    for sentence in sentences:
+                        if len(current) + len(sentence) < 50:  # Combine short segments
+                            current = f"{current} {sentence}".strip()
+                        else:
+                            if current:
+                                combined_sentences.append(current)
+                            current = sentence
+                    
+                    if current:
+                        combined_sentences.append(current)
+                    
+                    # Stream TTS for each sentence chunk
+                    for sentence in combined_sentences:
+                        if is_cancelled and is_cancelled():
+                            logger.info("TTS cancelled during streaming")
+                            break
+                        
+                        if sentence.strip():
+                            success = await stream_tts_for_sentence(
+                                websocket, groq_service, sentence, is_cancelled
+                            )
+                            if not success and is_cancelled and is_cancelled():
+                                break
                 
-                await websocket.send_json({
-                    "type": "audio",
-                    "data": audio_b64
-                })
+                # Signal end of audio stream
+                await websocket.send_json({"type": "audio_end"})
+                
             except Exception as e:
-                logger.error(f"TTS error: {e}", exc_info=True)
+                logger.error(f"TTS streaming error: {e}", exc_info=True)
                 # Continue without audio - transcript was already sent
             finally:
                 # Clear TTS in progress flag

@@ -66,8 +66,9 @@ export interface ToolResult {
 }
 
 // WebSocket Message Types
+// Note: Audio is now sent as binary frames, not JSON with base64
 export type WebSocketMessage =
-  | { type: 'audio'; data: string }
+  | { type: 'audio'; data: string }  // Legacy fallback (base64)
   | { type: 'text'; data: string }
   | { type: 'end_turn' }
   | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
@@ -75,6 +76,8 @@ export type WebSocketMessage =
   | { type: 'tool_result'; name: string; result: unknown }
   | { type: 'turn_complete' }
   | { type: 'interrupt' }
+  | { type: 'audio_start' }  // Signals start of streamed audio
+  | { type: 'audio_end' }    // Signals end of streamed audio
   | { type: 'error'; message: string };
 
 // Category definitions

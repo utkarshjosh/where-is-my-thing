@@ -33,16 +33,31 @@ export const useChatStore = create<ChatState>((set) => ({
   isVoiceMode: false,
 
   addTranscript: (transcript) =>
-    set((state) => ({
-      transcripts: [
-        ...state.transcripts,
-        {
-          ...transcript,
-          id: Date.now().toString(),
-          timestamp: new Date(),
-        },
-      ],
-    })),
+    set((state) => {
+      // Deduplicate: if the last transcript is a user transcript with the same text,
+      // skip adding (backend sends user transcript after frontend adds it locally for text messages)
+      const lastTranscript = state.transcripts[state.transcripts.length - 1];
+      if (
+        lastTranscript &&
+        lastTranscript.role === 'user' &&
+        transcript.role === 'user' &&
+        lastTranscript.text === transcript.text
+      ) {
+        // Duplicate user transcript - skip adding
+        return state;
+      }
+      
+      return {
+        transcripts: [
+          ...state.transcripts,
+          {
+            ...transcript,
+            id: Date.now().toString(),
+            timestamp: new Date(),
+          },
+        ],
+      };
+    }),
 
   updateLastTranscript: (text) =>
     set((state) => {
