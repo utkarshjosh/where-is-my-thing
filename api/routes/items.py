@@ -116,12 +116,13 @@ async def list_items(
         with gs._driver.session() as session:
             # Single query: get things with location path computed inline
             # Avoids N+1 by computing location_path in Cypher
+            # Uses aggregation to get the longest path (avoiding duplicates)
             result = session.run(
                 """
                 MATCH (t:Thing {user_id: $user_id})
                 OPTIONAL MATCH (t)-[:LOCATED_IN]->(leaf:Place {user_id: $user_id})
                 OPTIONAL MATCH path = (leaf)<-[:CONTAINS*0..]-(ancestor:Place {user_id: $user_id})
-                WITH t, leaf, 
+                WITH t, leaf,
                      CASE WHEN leaf IS NOT NULL 
                           THEN leaf.name 
                           ELSE null 
@@ -129,12 +130,16 @@ async def list_items(
                      CASE WHEN leaf IS NOT NULL
                           THEN reverse(reduce(s = [], n IN nodes(path) | s + n.name))
                           ELSE null
-                     END as path_parts
+                     END as path_parts,
+                     length(path) as path_length
+                // Group by thing and select the longest path (most complete hierarchy)
+                ORDER BY path_length DESC
+                WITH t, location, collect(path_parts)[0] as longest_path_parts
                 WITH t, location,
-                     CASE WHEN path_parts IS NOT NULL AND size(path_parts) > 0
-                          THEN reduce(s = '', i IN range(0, size(path_parts)-1) | 
-                               CASE WHEN i = 0 THEN path_parts[i] 
-                                    ELSE s + ' → ' + path_parts[i] END)
+                     CASE WHEN longest_path_parts IS NOT NULL AND size(longest_path_parts) > 0
+                          THEN reduce(s = '', i IN range(0, size(longest_path_parts)-1) | 
+                               CASE WHEN i = 0 THEN longest_path_parts[i] 
+                                    ELSE s + ' → ' + longest_path_parts[i] END)
                           ELSE location
                      END as location_path
                 RETURN t.id as id,
@@ -240,6 +245,7 @@ async def get_item(
     with GraphService(user_id=user_id) as gs:
         with gs._driver.session() as session:
             # Single query with location_path computed inline
+            # Uses aggregation to get the longest path (avoiding duplicates)
             result = session.run(
                 """
                 MATCH (t:Thing {id: $item_id, user_id: $user_id})
@@ -250,12 +256,16 @@ async def get_item(
                      CASE WHEN leaf IS NOT NULL
                           THEN reverse(reduce(s = [], n IN nodes(path) | s + n.name))
                           ELSE null
-                     END as path_parts
+                     END as path_parts,
+                     length(path) as path_length
+                // Group by thing and select the longest path (most complete hierarchy)
+                ORDER BY path_length DESC
+                WITH t, location, collect(path_parts)[0] as longest_path_parts
                 WITH t, location,
-                     CASE WHEN path_parts IS NOT NULL AND size(path_parts) > 0
-                          THEN reduce(s = '', i IN range(0, size(path_parts)-1) | 
-                               CASE WHEN i = 0 THEN path_parts[i] 
-                                    ELSE s + ' → ' + path_parts[i] END)
+                     CASE WHEN longest_path_parts IS NOT NULL AND size(longest_path_parts) > 0
+                          THEN reduce(s = '', i IN range(0, size(longest_path_parts)-1) | 
+                               CASE WHEN i = 0 THEN longest_path_parts[i] 
+                                    ELSE s + ' → ' + longest_path_parts[i] END)
                           ELSE location
                      END as location_path
                 RETURN t.id as id,
