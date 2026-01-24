@@ -5,6 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
+    image: where-is-my-thing-api:latest
     ports:
       - "5000:5000"
     env_file:

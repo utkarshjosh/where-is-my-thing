@@ -28,6 +28,13 @@ class ItemsListResponse(BaseModel):
     count: int
 
 
+class DeleteItemResponse(BaseModel):
+    """Response model for delete operation."""
+    status: str
+    message: str
+    thing_name: Optional[str] = None
+
+
 def _get_user_id(current_user: AuthenticatedUser) -> str:
     """Get or create the local user ID from Clerk authentication.
     
@@ -298,3 +305,48 @@ async def get_item(
                 location_path=record["location_path"],
                 category=_get_category(item_type, tags, name),
             )
+
+
+@router.delete("/{item_id}", response_model=DeleteItemResponse)
+async def delete_item(
+    item_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Delete an item by ID.
+    
+    Removes the thing and all its relationships from the graph.
+    Also cleans up orphaned places.
+    """
+    from fastapi import HTTPException
+    
+    user_id = _get_user_id(current_user)
+    
+    with GraphService(user_id=user_id) as gs:
+        with gs._driver.session() as session:
+            # First, get the item name by ID
+            result = session.run(
+                """
+                MATCH (t:Thing {id: $item_id, user_id: $user_id})
+                RETURN t.name as name
+                """,
+                item_id=item_id,
+                user_id=user_id
+            )
+            record = result.single()
+            
+            if not record:
+                raise HTTPException(status_code=404, detail="Item not found")
+            
+            thing_name = record["name"]
+        
+        # Use GraphService.delete_thing which handles all cleanup
+        delete_result = gs.delete_thing(thing_name)
+        
+        if delete_result["status"] == "error":
+            raise HTTPException(status_code=400, detail=delete_result["message"])
+        
+        return DeleteItemResponse(
+            status=delete_result["status"],
+            message=delete_result["message"],
+            thing_name=delete_result.get("thing_name"),
+        )

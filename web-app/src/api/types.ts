@@ -15,6 +15,12 @@ export interface ItemsResponse {
   count: number;
 }
 
+export interface DeleteItemResponse {
+  status: string;
+  message: string;
+  thing_name?: string;
+}
+
 export interface GraphNode {
   id: string;
   label: string;

@@ -740,6 +740,9 @@ async def process_agent_turn(
         # Run the agent and collect response
         response_text = ""
         
+        # Track tool calls to match with results
+        pending_tool_calls = {}  # tool_call_id -> tool_name
+        
         # Set user context for tools
         from spatial_memory_agent.context import user_id_ctx
         token = user_id_ctx.set(user_id)
@@ -755,23 +758,101 @@ async def process_agent_turn(
                     logger.info("Agent turn cancelled due to user interrupt")
                     return
                 
-                # Handle tool calls
+                # Debug: Log event structure to understand ADK's event model
+                # Temporarily enable INFO level logging to see what's happening
+                event_attrs = [attr for attr in dir(event) if not attr.startswith('_')]
+                logger.info(f"🔍 ADK event: {type(event).__name__}, attributes: {event_attrs}")
+                
+                # Check what's actually in the event
+                if hasattr(event, "actions"):
+                    logger.info(f"  📋 event.actions type: {type(event.actions)}, value: {event.actions}")
+                    if event.actions:
+                        for i, action in enumerate(event.actions):
+                            action_attrs = [attr for attr in dir(action) if not attr.startswith('_')]
+                            logger.info(f"  🔧 Action {i}: {type(action).__name__}, attributes: {action_attrs}")
+                            # Try to get values
+                            if hasattr(action, "tool_call"):
+                                logger.info(f"    tool_call: {action.tool_call}")
+                            if hasattr(action, "tool_result"):
+                                logger.info(f"    tool_result: {action.tool_result}")
+                            if hasattr(action, "result"):
+                                logger.info(f"    result: {action.result}")
+                
+                if hasattr(event, "tool_results"):
+                    logger.info(f"  📊 event.tool_results: {event.tool_results}")
+                
+                # Handle actions (tool calls and tool results)
                 if hasattr(event, "actions") and event.actions:
                     for action in event.actions:
+                        # Check for tool calls
                         if hasattr(action, "tool_call") and action.tool_call:
+                            tool_name = action.tool_call.name
+                            tool_args = dict(action.tool_call.args) if action.tool_call.args else {}
+                            
+                            # Get tool call ID if available (for matching with results)
+                            tool_call_id = None
+                            if hasattr(action.tool_call, "id"):
+                                tool_call_id = action.tool_call.id
+                            elif hasattr(action, "id"):
+                                tool_call_id = action.id
+                            
                             await websocket.send_json({
                                 "type": "tool_call",
-                                "name": action.tool_call.name,
-                                "args": dict(action.tool_call.args) if action.tool_call.args else {}
+                                "name": tool_name,
+                                "args": tool_args
+                            })
+                            
+                            # Store pending tool call
+                            if tool_call_id:
+                                pending_tool_calls[tool_call_id] = tool_name
+                        
+                        # Check for tool results in actions (ADK may attach results to actions)
+                        # Tool results might come in a separate action after the tool call
+                        if hasattr(action, "tool_result"):
+                            tool_result = action.tool_result
+                            # Try to get tool name from the result or match with pending calls
+                            result_name = "unknown"
+                            if hasattr(tool_result, "name"):
+                                result_name = tool_result.name
+                            elif isinstance(tool_result, dict) and "name" in tool_result:
+                                result_name = tool_result["name"]
+                            
+                            result_data = tool_result
+                            if hasattr(tool_result, "result"):
+                                result_data = tool_result.result
+                            elif isinstance(tool_result, dict) and "result" in tool_result:
+                                result_data = tool_result["result"]
+                            
+                            await websocket.send_json({
+                                "type": "tool_result",
+                                "name": result_name,
+                                "result": result_data
+                            })
+                        
+                        # Also check for a generic "result" attribute
+                        elif hasattr(action, "result") and action.result and not hasattr(action, "tool_call"):
+                            # This might be a tool result if there's no tool_call
+                            result_data = action.result
+                            result_name = "unknown"
+                            if isinstance(result_data, dict):
+                                result_name = result_data.get("name", "unknown")
+                                result_data = result_data.get("result", result_data)
+                            
+                            await websocket.send_json({
+                                "type": "tool_result",
+                                "name": result_name,
+                                "result": result_data
                             })
                 
-                # Handle tool results
+                # Handle tool results at event level (check multiple possible locations)
                 if hasattr(event, "tool_results") and event.tool_results:
                     for result in event.tool_results:
+                        result_name = result.name if hasattr(result, "name") else "unknown"
+                        result_data = result.result if hasattr(result, "result") else result
                         await websocket.send_json({
                             "type": "tool_result",
-                            "name": result.name if hasattr(result, "name") else "unknown",
-                            "result": result.result if hasattr(result, "result") else str(result)
+                            "name": result_name,
+                            "result": result_data
                         })
                 
                 # Accumulate response text

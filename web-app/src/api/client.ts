@@ -3,7 +3,7 @@
  * Uses Clerk for authentication
  */
 
-import type { ItemsResponse, Item, GraphData, UserProfile } from './types';
+import type { ItemsResponse, Item, DeleteItemResponse, GraphData, UserProfile } from './types';
 import { useRateLimitStore } from '@/stores/rateLimitStore';
 
 // Use /api prefix for Vite proxy in development
@@ -89,6 +89,12 @@ class ApiClient {
 
   async getItem(id: string): Promise<Item> {
     return this.request<Item>(`/items/${id}`);
+  }
+
+  async deleteItem(id: string): Promise<DeleteItemResponse> {
+    return this.request<DeleteItemResponse>(`/items/${id}`, {
+      method: 'DELETE',
+    });
   }
 
   // Graph API

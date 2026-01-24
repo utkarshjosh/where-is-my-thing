@@ -15,8 +15,10 @@ import {
   Tooltip,
   Center,
   Button,
+  Modal,
 } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
+import { notifications } from '@mantine/notifications';
 import {
   IconSearch,
   IconGridDots,
@@ -32,9 +34,10 @@ import {
   IconRefresh,
   IconFilter,
   IconX,
+  IconTrash,
 } from '@tabler/icons-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useItems, useSearchItems } from '@/api';
+import { useItems, useSearchItems, useDeleteItem } from '@/api';
 import { categories, type CategoryKey, type Item } from '@/api/types';
 
 const categoryIcons: Record<CategoryKey, React.ComponentType<{ size: number }>> = {
@@ -52,6 +55,7 @@ export function ItemsPage() {
   const [debouncedSearch] = useDebouncedValue(searchQuery, 300);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [selectedCategory, setSelectedCategory] = useState<CategoryKey | 'all'>('all');
+  const [itemToDelete, setItemToDelete] = useState<Item | null>(null);
 
   // Fetch items
   const { data: itemsData, isLoading, refetch } = useItems(100, 0);
@@ -59,6 +63,36 @@ export function ItemsPage() {
     debouncedSearch,
     debouncedSearch.length > 0
   );
+
+  // Delete mutation
+  const deleteItem = useDeleteItem();
+
+  const handleDelete = (item: Item) => {
+    setItemToDelete(item);
+  };
+
+  const confirmDelete = () => {
+    if (!itemToDelete) return;
+
+    deleteItem.mutate(itemToDelete.id, {
+      onSuccess: (data) => {
+        notifications.show({
+          title: 'Item deleted',
+          message: data.message || `Deleted "${itemToDelete.name}"`,
+          color: 'green',
+        });
+        setItemToDelete(null);
+      },
+      onError: (error) => {
+        notifications.show({
+          title: 'Failed to delete',
+          message: error.message || 'Something went wrong',
+          color: 'red',
+        });
+        setItemToDelete(null);
+      },
+    });
+  };
 
   // Use search results if searching, otherwise use all items
   const items = useMemo(() => {
@@ -259,7 +293,7 @@ export function ItemsPage() {
                           exit={{ opacity: 0, y: -20 }}
                           transition={{ duration: 0.2, delay: index * 0.05 }}
                         >
-                          <ItemCard item={item} />
+                          <ItemCard item={item} onDelete={handleDelete} />
                         </motion.div>
                       </Grid.Col>
                     ))}
@@ -276,7 +310,7 @@ export function ItemsPage() {
                         exit={{ opacity: 0, x: 20 }}
                         transition={{ duration: 0.2, delay: index * 0.03 }}
                       >
-                        <ItemRow item={item} />
+                        <ItemRow item={item} onDelete={handleDelete} />
                       </motion.div>
                     ))}
                   </AnimatePresence>
@@ -286,11 +320,39 @@ export function ItemsPage() {
           ))}
         </Stack>
       )}
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        opened={!!itemToDelete}
+        onClose={() => setItemToDelete(null)}
+        title="Delete Item"
+        centered
+        size="sm"
+      >
+        <Stack gap="md">
+          <Text size="sm">
+            Are you sure you want to delete <strong>{itemToDelete?.name}</strong>? This action cannot be undone.
+          </Text>
+          <Group justify="flex-end" gap="sm">
+            <Button variant="light" color="gray" onClick={() => setItemToDelete(null)}>
+              Cancel
+            </Button>
+            <Button
+              color="red"
+              onClick={confirmDelete}
+              loading={deleteItem.isPending}
+            >
+              Delete
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </Box>
   );
 }
 
-function ItemCard({ item }: { item: Item }) {
+function ItemCard({ item, onDelete }: { item: Item; onDelete: (item: Item) => void }) {
+  const [isHovered, setIsHovered] = useState(false);
   const category = (item.category as CategoryKey) || 'other';
   const categoryInfo = categories[category] || categories.other;
   const Icon = categoryIcons[category] || IconBox;
@@ -304,16 +366,41 @@ function ItemCard({ item }: { item: Item }) {
         border: '1px solid rgba(255, 255, 255, 0.06)',
         cursor: 'pointer',
         transition: 'all 0.2s',
+        position: 'relative',
       }}
       onMouseEnter={(e) => {
+        setIsHovered(true);
         e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
         e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)';
       }}
       onMouseLeave={(e) => {
+        setIsHovered(false);
         e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
         e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.06)';
       }}
     >
+      {/* Delete button - appears on hover */}
+      {isHovered && (
+        <Tooltip label="Delete item">
+          <ActionIcon
+            variant="subtle"
+            color="red"
+            size="sm"
+            style={{
+              position: 'absolute',
+              top: 8,
+              right: 8,
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(item);
+            }}
+          >
+            <IconTrash size={14} />
+          </ActionIcon>
+        </Tooltip>
+      )}
+
       <Group gap="md" wrap="nowrap">
         <ThemeIcon
           size="xl"
@@ -360,7 +447,8 @@ function ItemCard({ item }: { item: Item }) {
   );
 }
 
-function ItemRow({ item }: { item: Item }) {
+function ItemRow({ item, onDelete }: { item: Item; onDelete: (item: Item) => void }) {
+  const [isHovered, setIsHovered] = useState(false);
   const category = (item.category as CategoryKey) || 'other';
   const categoryInfo = categories[category] || categories.other;
   const Icon = categoryIcons[category] || IconBox;
@@ -377,9 +465,11 @@ function ItemRow({ item }: { item: Item }) {
         transition: 'all 0.2s',
       }}
       onMouseEnter={(e) => {
+        setIsHovered(true);
         e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
       }}
       onMouseLeave={(e) => {
+        setIsHovered(false);
         e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
       }}
     >
@@ -418,6 +508,23 @@ function ItemRow({ item }: { item: Item }) {
               </Badge>
             ))}
           </Group>
+        )}
+
+        {/* Delete button - appears on hover */}
+        {isHovered && (
+          <Tooltip label="Delete item">
+            <ActionIcon
+              variant="subtle"
+              color="red"
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(item);
+              }}
+            >
+              <IconTrash size={14} />
+            </ActionIcon>
+          </Tooltip>
         )}
       </Group>
     </Paper>

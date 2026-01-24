@@ -2,9 +2,9 @@
  * TanStack Query hooks for Items API
  */
 
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from './client';
-import type { ItemsResponse, Item } from './types';
+import type { ItemsResponse, Item, DeleteItemResponse } from './types';
 
 export const itemsKeys = {
   all: ['items'] as const,
@@ -37,5 +37,17 @@ export function useItem(id: string) {
     queryKey: itemsKeys.detail(id),
     queryFn: () => apiClient.getItem(id),
     enabled: !!id,
+  });
+}
+
+export function useDeleteItem() {
+  const queryClient = useQueryClient();
+
+  return useMutation<DeleteItemResponse, Error, string>({
+    mutationFn: (id: string) => apiClient.deleteItem(id),
+    onSuccess: () => {
+      // Invalidate all items queries to refetch
+      queryClient.invalidateQueries({ queryKey: itemsKeys.all });
+    },
   });
 }

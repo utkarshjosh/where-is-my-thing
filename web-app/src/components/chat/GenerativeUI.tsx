@@ -7,6 +7,7 @@ import {
   IconKey,
   IconDeviceMobile,
   IconFileText,
+  IconBook,
   IconUser,
   IconHome,
 } from '@tabler/icons-react';
@@ -22,6 +23,7 @@ const categoryIcons: Record<CategoryKey, React.ComponentType<{ size: number }>> 
   keys: IconKey,
   electronics: IconDeviceMobile,
   documents: IconFileText,
+  books: IconBook,
   personal: IconUser,
   home: IconHome,
   other: IconBox,
