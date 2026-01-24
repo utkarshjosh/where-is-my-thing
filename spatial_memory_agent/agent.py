@@ -283,11 +283,81 @@ def attach_intent(thing_name: str, intent: str, description: str = None) -> dict
     return {"ok": False, "error": result.get("message"), "matches": result.get("matches")}
 
 
+def delete_thing(thing_name: str) -> dict:
+    """Delete a thing permanently. Use when user wants to remove an item from tracking.
+    
+    Args:
+        thing_name: Name of the thing to delete
+    """
+    with _get_graph_service() as gs:
+        result = gs.delete_thing(thing_name)
+    
+    if result.get("status") == "success":
+        return {
+            "ok": True,
+            "action": "deleted",
+            "name": result.get("thing_name"),
+            "message": result.get("message")
+        }
+    return {"ok": False, "error": result.get("message"), "matches": result.get("matches")}
+
+
+def rename_place(old_name: str, new_name: str) -> dict:
+    """Rename a location/place. Use when user wants to correct or update a place name.
+    
+    This updates the place name in-place - all items stay where they are,
+    only the location's name changes.
+    
+    Args:
+        old_name: Current name of the place (e.g., "Paris Tierra Flat")
+        new_name: New name for the place (e.g., "Paras Tierea Flat")
+    """
+    with _get_graph_service() as gs:
+        result = gs.rename_place(old_name, new_name)
+    
+    if result.get("status") == "success":
+        return {
+            "ok": True,
+            "action": "renamed",
+            "old_name": result.get("old_name"),
+            "new_name": result.get("new_name"),
+            "message": result.get("message")
+        }
+    return {"ok": False, "error": result.get("message"), "matches": result.get("matches")}
+
+
+def delete_place(place_name: str, force: bool = False) -> dict:
+    """Delete a location/place. Use when user wants to remove a location.
+    
+    Only works if the place is empty (no items). Use force=True to also
+    delete all items in the place.
+    
+    After deletion, any orphaned parent places (empty with no children)
+    are automatically cleaned up.
+    
+    Args:
+        place_name: Name of the place to delete
+        force: If True, also delete all items in the place (default: False)
+    """
+    with _get_graph_service() as gs:
+        result = gs.delete_place(place_name, force=force)
+    
+    if result.get("status") == "success":
+        return {
+            "ok": True,
+            "action": "deleted",
+            "place_name": result.get("place_name"),
+            "items_deleted": result.get("items_deleted", 0),
+            "message": result.get("message")
+        }
+    return {"ok": False, "error": result.get("message"), "item_count": result.get("item_count")}
+
+
 # ========== Agent Definition ==========
 
 AGENT_INSTRUCTION = """Spatial memory assistant. Track where users keep things.
 
-Tools: remember_thing, find_thing, move_thing, associate_things, list_contents, list_places, attach_intent, confirm_item_match, create_new_item.
+Tools: remember_thing, find_thing, move_thing, associate_things, list_contents, list_places, attach_intent, confirm_item_match, create_new_item, delete_thing, rename_place, delete_place.
 Location format: "Room > Zone > Container" (e.g., "Bedroom > Closet > Top Shelf").
 
 🔑 CRITICAL: CANONICAL ITEM RESOLUTION
@@ -327,6 +397,24 @@ RESPONSE GUIDELINES:
 - For locations, use natural "in" format: "Your passport is in Bedroom, in Locker, in Blue File"
 - Provide helpful context when relevant, such as when items were stored or related items
 
+🔑 DELETE AND RENAME OPERATIONS
+Use these tools for cleanup and corrections:
+
+1. `delete_thing`: Permanently remove an item from tracking
+   - Use when user says "delete my X" or "remove X" or "I don't have X anymore"
+   - Automatically cleans up orphaned empty locations
+
+2. `rename_place`: Correct a location name in-place
+   - Use when user says "it's actually called X, not Y" or "rename X to Y"
+   - Items stay in place, only the name changes
+   - ALWAYS use this instead of move_thing when correcting spelling/typos in location names
+
+3. `delete_place`: Remove an empty location
+   - Use when user wants to delete a location
+   - Only works if location is empty (no items)
+   - Use force=True if user explicitly wants to delete location AND all its items
+   - Parent locations are auto-cleaned if they become empty
+
 TTS FORMATTING RULES (important for voice output):
 - NO markdown formatting (no asterisks, hashes, backticks)
 - NO emojis
@@ -353,5 +441,8 @@ root_agent = Agent(
         attach_intent,
         confirm_item_match,
         create_new_item,
+        delete_thing,
+        rename_place,
+        delete_place,
     ],
 )

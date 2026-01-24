@@ -934,3 +934,286 @@ class GraphService:
             "intent": intent_name,
             "message": f"'{thing['name']}' is now associated with intent: {intent_name}"
         }
+    
+    # ========== Delete and Rename Operations ==========
+    
+    def delete_thing(self, thing_name: str) -> dict:
+        """Delete a thing and all its relationships (user-scoped).
+        
+        Removes the thing node and cleans up:
+        - LOCATED_IN relationship
+        - OWNS relationship from User
+        - CANONICAL relationship
+        - RELATED_TO relationships
+        - USED_FOR relationships
+        - Vector embedding from index
+        
+        Args:
+            thing_name: Name of the thing to delete
+        """
+        matches = self.find_thing_by_name(thing_name)
+        
+        if not matches:
+            return {"status": "error", "message": f"'{thing_name}' not found"}
+        
+        if len(matches) > 1:
+            return {
+                "status": "error",
+                "error_type": "ambiguity",
+                "message": f"Multiple items match '{thing_name}': {[m['name'] for m in matches]}. Which one do you want to delete?",
+                "matches": matches
+            }
+        
+        thing = matches[0]
+        thing_id = thing["id"]
+        thing_name_actual = thing["name"]
+        location_path = thing.get("location_path", "unknown")
+        
+        with self._driver.session() as session:
+            # Delete the thing and all its relationships
+            session.run(
+                """
+                MATCH (t:Thing {id: $thing_id, user_id: $user_id})
+                DETACH DELETE t
+                """,
+                thing_id=thing_id,
+                user_id=self.user_id
+            )
+        
+        # Clean up orphaned places (places with no items and no children)
+        self._cleanup_orphaned_places()
+        
+        return {
+            "status": "success",
+            "action": "deleted",
+            "thing_name": thing_name_actual,
+            "location": location_path,
+            "message": f"Deleted '{thing_name_actual}' from {location_path}"
+        }
+    
+    def rename_place(self, old_name: str, new_name: str) -> dict:
+        """Rename a place in-place (user-scoped).
+        
+        Updates the place's name without creating a new location.
+        All items in the location stay in place, only the name changes.
+        
+        Args:
+            old_name: Current name of the place
+            new_name: New name for the place
+        """
+        with self._driver.session() as session:
+            # Find the place by name (user-scoped)
+            result = session.run(
+                """
+                MATCH (p:Place {user_id: $user_id})
+                WHERE toLower(p.name) = toLower($old_name)
+                RETURN p
+                """,
+                user_id=self.user_id,
+                old_name=old_name.strip()
+            )
+            records = list(result)
+            
+            if not records:
+                return {"status": "error", "message": f"Place '{old_name}' not found"}
+            
+            if len(records) > 1:
+                places = [{"name": r["p"]["name"], "type": r["p"].get("place_type")} for r in records]
+                return {
+                    "status": "error",
+                    "error_type": "ambiguity",
+                    "message": f"Multiple places match '{old_name}': {[p['name'] for p in places]}. Please be more specific.",
+                    "matches": places
+                }
+            
+            place_node = records[0]["p"]
+            place_id = place_node["id"]
+            old_name_actual = place_node["name"]
+            
+            # Check if new name already exists for this user
+            existing = session.run(
+                """
+                MATCH (p:Place {user_id: $user_id})
+                WHERE toLower(p.name) = toLower($new_name) AND p.id <> $place_id
+                RETURN p
+                """,
+                user_id=self.user_id,
+                new_name=new_name.strip(),
+                place_id=place_id
+            )
+            if existing.single():
+                return {
+                    "status": "error",
+                    "message": f"A place named '{new_name}' already exists. Use move_thing to relocate items."
+                }
+            
+            # Update the place name
+            session.run(
+                """
+                MATCH (p:Place {id: $place_id, user_id: $user_id})
+                SET p.name = $new_name, p.updated_at = datetime()
+                """,
+                place_id=place_id,
+                user_id=self.user_id,
+                new_name=new_name.strip()
+            )
+            
+            # Re-index all things in this place (location changed in their profile)
+            things_result = session.run(
+                """
+                MATCH (t:Thing {user_id: $user_id})-[:LOCATED_IN]->(:Place)<-[:CONTAINS*0..]-(p:Place {id: $place_id})
+                RETURN t.id as id
+                UNION
+                MATCH (t:Thing {user_id: $user_id})-[:LOCATED_IN]->(p:Place {id: $place_id})
+                RETURN t.id as id
+                """,
+                user_id=self.user_id,
+                place_id=place_id
+            )
+            for record in things_result:
+                self._reindex_thing(record["id"])
+        
+        return {
+            "status": "success",
+            "action": "renamed",
+            "old_name": old_name_actual,
+            "new_name": new_name.strip(),
+            "message": f"Renamed place '{old_name_actual}' to '{new_name.strip()}'"
+        }
+    
+    def delete_place(self, place_name: str, force: bool = False) -> dict:
+        """Delete a place and optionally its orphaned parent hierarchy (user-scoped).
+        
+        Only deletes if the place has no items. If force=True, also deletes
+        items in the place (use with caution).
+        
+        After deletion, cleans up any orphaned parent places that have
+        no remaining children and no items.
+        
+        Args:
+            place_name: Name of the place to delete
+            force: If True, also delete all items in the place
+        """
+        with self._driver.session() as session:
+            # Find the place by name (user-scoped)
+            result = session.run(
+                """
+                MATCH (p:Place {user_id: $user_id})
+                WHERE toLower(p.name) = toLower($place_name)
+                RETURN p
+                """,
+                user_id=self.user_id,
+                place_name=place_name.strip()
+            )
+            records = list(result)
+            
+            if not records:
+                return {"status": "error", "message": f"Place '{place_name}' not found"}
+            
+            if len(records) > 1:
+                places = [{"name": r["p"]["name"], "type": r["p"].get("place_type")} for r in records]
+                return {
+                    "status": "error",
+                    "error_type": "ambiguity",
+                    "message": f"Multiple places match '{place_name}': {[p['name'] for p in places]}. Please be more specific.",
+                    "matches": places
+                }
+            
+            place_node = records[0]["p"]
+            place_id = place_node["id"]
+            place_name_actual = place_node["name"]
+            
+            # Check for items in this place or any of its children
+            items_result = session.run(
+                """
+                MATCH (t:Thing {user_id: $user_id})-[:LOCATED_IN]->(:Place)<-[:CONTAINS*0..]-(p:Place {id: $place_id})
+                RETURN count(t) as item_count
+                UNION ALL
+                MATCH (t:Thing {user_id: $user_id})-[:LOCATED_IN]->(p:Place {id: $place_id})
+                RETURN count(t) as item_count
+                """,
+                user_id=self.user_id,
+                place_id=place_id
+            )
+            total_items = sum(r["item_count"] for r in items_result)
+            
+            if total_items > 0 and not force:
+                return {
+                    "status": "error",
+                    "message": f"Place '{place_name_actual}' contains {total_items} item(s). Move or delete items first, or use force=True.",
+                    "item_count": total_items
+                }
+            
+            # If force, delete all items in this place hierarchy first
+            if force and total_items > 0:
+                session.run(
+                    """
+                    MATCH (t:Thing {user_id: $user_id})-[:LOCATED_IN]->(:Place)<-[:CONTAINS*0..]-(p:Place {id: $place_id})
+                    DETACH DELETE t
+                    """,
+                    user_id=self.user_id,
+                    place_id=place_id
+                )
+                session.run(
+                    """
+                    MATCH (t:Thing {user_id: $user_id})-[:LOCATED_IN]->(p:Place {id: $place_id})
+                    DETACH DELETE t
+                    """,
+                    user_id=self.user_id,
+                    place_id=place_id
+                )
+            
+            # Delete the place and its children
+            session.run(
+                """
+                MATCH (p:Place {id: $place_id, user_id: $user_id})
+                OPTIONAL MATCH (p)-[:CONTAINS*]->(child:Place {user_id: $user_id})
+                DETACH DELETE child, p
+                """,
+                place_id=place_id,
+                user_id=self.user_id
+            )
+        
+        # Clean up orphaned parent places
+        self._cleanup_orphaned_places()
+        
+        result_msg = f"Deleted place '{place_name_actual}'"
+        if force and total_items > 0:
+            result_msg += f" and {total_items} item(s)"
+        
+        return {
+            "status": "success",
+            "action": "deleted",
+            "place_name": place_name_actual,
+            "items_deleted": total_items if force else 0,
+            "message": result_msg
+        }
+    
+    def _cleanup_orphaned_places(self) -> int:
+        """Remove places that have no items and no children (user-scoped).
+        
+        Iteratively removes orphaned places from leaves up to root.
+        Returns count of places deleted.
+        """
+        deleted_count = 0
+        
+        with self._driver.session() as session:
+            # Repeat until no more orphans (handles cascading cleanup)
+            while True:
+                result = session.run(
+                    """
+                    MATCH (p:Place {user_id: $user_id})
+                    WHERE NOT (p)<-[:LOCATED_IN]-(:Thing {user_id: $user_id})
+                      AND NOT (p)-[:CONTAINS]->(:Place {user_id: $user_id})
+                    WITH p LIMIT 100
+                    DETACH DELETE p
+                    RETURN count(*) as deleted
+                    """,
+                    user_id=self.user_id
+                )
+                count = result.single()["deleted"]
+                if count == 0:
+                    break
+                deleted_count += count
+        
+        return deleted_count
