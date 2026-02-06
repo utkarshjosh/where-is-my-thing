@@ -124,7 +124,7 @@ Exact-match search fails when you can't remember the exact name. Semantic search
 | "winter stuff" | blankets, sweaters, heater |
 | "electronics" | laptop, charger, HDMI cable |
 
-Uses Google's `text-embedding-004` model with cosine similarity.
+Uses Google's `gemini-embedding-001` model (3072 dimensions) with cosine similarity.
 
 **File:** [`services/memory_service.py`](services/memory_service.py)
 
@@ -155,7 +155,7 @@ The smartest part. When you say "Crime and Punishment book" today and "that Dost
 | **Agent Framework** | [Google ADK](https://github.com/google/adk-python) | Clean tool-calling, conversation management |
 | **LLM** | Groq (Qwen QwQ 32B) | Fast inference, good at tool use |
 | **Graph Database** | Neo4j | Natural fit for spatial relationships |
-| **Embeddings** | Google `text-embedding-004` | High quality, 768 dimensions |
+| **Embeddings** | Google `gemini-embedding-001` | High quality, 3072 dimensions |
 | **Voice** | Groq Whisper (STT) + Orpheus (TTS) | Real-time voice interaction |
 | **API** | FastAPI | Async, auto-docs, type-safe |
 | **Mobile** | React Native (Expo) | Cross-platform, voice-first UI |

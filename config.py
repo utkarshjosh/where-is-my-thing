@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     
     # Embeddings (Google AI)
     google_api_key: str = ""
-    embedding_model: str = "text-embedding-004"
+    embedding_model: str = "gemini-embedding-001"
     embedding_batch_size: int = 100
     
     # Neo4j Connection

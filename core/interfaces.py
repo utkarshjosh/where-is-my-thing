@@ -10,9 +10,9 @@ class EmbeddingResult:
     
     Attributes:
         vector: The embedding vector (list of floats)
-        model: Model name used (e.g., "text-embedding-004")
-        version: Application version for re-indexing (e.g., "v1.0")
-        dimension: Vector dimension (e.g., 768)
+        model: Model name used (e.g., "gemini-embedding-001")
+        version: Application version for re-indexing (e.g., "v1.1")
+        dimension: Vector dimension (e.g., 3072)
     """
     vector: list[float]
     model: str
@@ -31,7 +31,7 @@ class IEmbeddingProvider(ABC):
     @property
     @abstractmethod
     def model_name(self) -> str:
-        """Model identifier (e.g., 'text-embedding-004')."""
+        """Model identifier (e.g., 'gemini-embedding-001')."""
         ...
     
     @property

@@ -74,7 +74,7 @@ VECTOR_INDEX_SETUP = """
 CREATE VECTOR INDEX thing_embedding IF NOT EXISTS
 FOR (t:Thing) ON (t.embedding)
 OPTIONS {indexConfig: {
-    `vector.dimensions`: 768,
+    `vector.dimensions`: 3072,
     `vector.similarity_function`: 'cosine'
 }};
 
@@ -82,7 +82,7 @@ OPTIONS {indexConfig: {
 CREATE VECTOR INDEX canonical_embedding IF NOT EXISTS
 FOR (c:CanonicalItem) ON (c.embedding)
 OPTIONS {indexConfig: {
-    `vector.dimensions`: 768,
+    `vector.dimensions`: 3072,
     `vector.similarity_function`: 'cosine'
 }};
 """

@@ -5,14 +5,14 @@ from config import get_settings
 
 
 class GoogleEmbeddingProvider(IEmbeddingProvider):
-    """Google text-embedding-004 provider.
+    """Google gemini-embedding-001 provider.
     
     Uses LlamaIndex's GoogleGenAIEmbedding wrapper.
     Bump VERSION when model changes to trigger re-indexing.
     """
     
     # Bump this when model changes or re-indexing needed
-    VERSION = "v1.0"
+    VERSION = "v1.1"  # gemini-embedding-001 (3072 dims); was v1.0 text-embedding-004
     
     def __init__(self):
         settings = get_settings()
@@ -33,7 +33,7 @@ class GoogleEmbeddingProvider(IEmbeddingProvider):
     
     @property
     def dimensions(self) -> int:
-        return 768  # text-embedding-004 dimension
+        return 3072  # gemini-embedding-001 dimension
     
     def embed_text(self, text: str) -> EmbeddingResult:
         """Embed text for storage."""
